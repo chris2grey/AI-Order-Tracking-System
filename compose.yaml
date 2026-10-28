@@ -1,0 +1,119 @@
+name: order-tracker
+
+x-app: &app
+  build: .
+  image: order-tracker:local
+  environment:
+    DJANGO_ENV: production
+    DJANGO_DEBUG: '0'
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?}
+    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?}
+    CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?}
+    POSTGRES_DB: ${POSTGRES_DB:?}
+    POSTGRES_USER: ${POSTGRES_USER:?}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    WEB_WORKERS: ${WEB_WORKERS:-2}
+    DATA_DIR: /app/data
+    STATIC_ROOT: /app/staticfiles
+    POSTGRES_HOST: db
+    POSTGRES_PORT: '5432'
+    POSTGRES_SSLMODE: disable
+    REDIS_URL: redis://redis:6379/0
+    TRUST_PROXY: '1'
+  volumes:
+    - private-data:/app/data
+    - static-files:/app/staticfiles
+    - ./backups:/backups
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  networks: [backend]
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '5'
+
+services:
+  db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Run deploy/init_env.py first}
+      APP_DB: ${POSTGRES_DB:?}
+      APP_USER: ${POSTGRES_USER:?}
+      APP_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/init-db.sh:/docker-entrypoint-initdb.d/10-app.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '5'}
+
+  redis:
+    image: redis:7.4-bookworm
+    restart: unless-stopped
+    command: [redis-server, --maxmemory, 128mb, --maxmemory-policy, noeviction]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [backend]
+
+  migrate:
+    <<: *app
+    command: [sh, -c, 'python manage.py check --deploy --fail-level WARNING && python manage.py migrate --noinput && python manage.py collectstatic --noinput']
+    restart: 'no'
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  web:
+    <<: *app
+    restart: unless-stopped
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, deploy/healthcheck.py]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?}
+      ACME_EMAIL: ${ACME_EMAIL:?}
+    ports: ['80:80', '443:443']
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - static-files:/srv/static:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web: {condition: service_healthy}
+    networks: [backend, edge]
+
+networks:
+  backend:
+    internal: true
+  edge:
+
+volumes:
+  postgres-data:
+  private-data:
+  static-files:
+  caddy-data:
+  caddy-config:

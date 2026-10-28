@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><h1>服务器与数据</h1><p class="muted">查看当前存储方式和接口接入信息。</p></div></div>
+<div class="allocation-layout"><section class="panel"><div class="panel-heading"><h2>当前运行环境</h2></div><table><tbody>
+<tr><th>数据库</th><td>{% if database_vendor == 'postgresql' %}PostgreSQL · 服务器存储{% else %}SQLite · 本地存储{% endif %}</td></tr>
+<tr><th>运行配置</th><td>{% if production %}生产环境{% else %}本地 / 开发环境{% endif %}</td></tr>
+<tr><th>登录限流</th><td>{% if shared_cache %}共享缓存{% else %}单进程缓存{% endif %}</td></tr>
+<tr><th>凭证保存</th><td>私有文件存储，仅通过订单权限校验后下载</td></tr>
+<tr><th>数据接口</th><td><code>/api/v1/</code> · 使用现有账号登录</td></tr>
+<tr><th>服务就绪检查</th><td><a href="/health/ready/">检查数据库与缓存连接</a></td></tr>
+</tbody></table></section>
+<section class="panel form-panel"><h2>后续接入与迁移</h2>
+<p>接口覆盖订单、独立补单、收付款、分摊、发货预览与确认、凭证和归档下载。金额以十进制字符串返回，写入请求使用唯一编号防止重复保存。</p>
+<p>迁移到服务器时，先导出带校验清单的备份，再恢复到空数据库。数据库、财务记录和凭证需要一起核验。服务器部署步骤见项目内《服务器部署.md》，接口说明见《API接口.md》。</p>
+</section></div>
+{% endblock %}

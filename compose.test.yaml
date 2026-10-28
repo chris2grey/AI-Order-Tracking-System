@@ -1,0 +1,41 @@
+# Independent integration environment; never points at the production volumes.
+name: order-tracker-tests
+services:
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: tracker_test_source
+      POSTGRES_USER: test_runner
+      POSTGRES_PASSWORD: fictional-test-only
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U test_runner -d tracker_test_source']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [test-only]
+  redis:
+    image: redis:7.4-bookworm
+    networks: [test-only]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+  test:
+    build: .
+    command: [python, manage.py, test, tracker, --verbosity, '2', --noinput]
+    environment:
+      DATA_DIR: /tmp/tracker-tests
+      POSTGRES_DB: tracker_test_source
+      POSTGRES_USER: test_runner
+      POSTGRES_PASSWORD: fictional-test-only
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/1
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [test-only]
+networks:
+  test-only:
+    internal: true
