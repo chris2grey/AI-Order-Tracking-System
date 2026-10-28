@@ -1,6 +1,6 @@
 # GitHub 与数据保存
 
-后续默认使用仓库 `chris2grey/AI-Order-Tracking-System` 和 Codex Cloud 环境开发，完整绑定步骤见 [云端开发.md](云端开发.md)。本机保留已有运行数据；下面的换机说明是恢复/维护入口，不代表继续以本地代码作为开发主版本。
+后续默认通过已连接的GitHub工具直接修改仓库 `chris2grey/AI-Order-Tracking-System`，由GitHub Actions的Remote checks在云端运行测试，详见 [云端开发.md](云端开发.md)。独立Codex Cloud工作区仍可另行配置；当前创建页的GitHub连接加载错误未解决，不能声称该环境已发布。本机保留已有运行数据；下面的换机说明是恢复/维护入口，不代表继续以本地代码作为开发主版本。
 
 GitHub 仓库用于保存源码、数据库迁移、测试、页面和开发文档。建议使用私有仓库。
 
