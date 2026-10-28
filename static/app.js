@@ -262,7 +262,7 @@ if(bulkForm) {
     bulkForm.dispatchEvent(new Event('input',{bubbles:true}));updateBulk();
   });
   document.getElementById('clear-allocations').addEventListener('click',()=>{rows.forEach(row=>amount(row).value='');bulkForm.dispatchEvent(new Event('input',{bubbles:true}));updateBulk();});
-  bulkForm.addEventListener('input',updateBulk);
+  bulkForm.addEventListener('input',event=>{if(event.target!==all)updateBulk();});
   bulkForm.addEventListener('change',updateBulk);
   bulkForm.addEventListener('submit',event=>{
     const s=updateBulk();
