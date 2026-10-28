@@ -1,6 +1,6 @@
 # 订单中枢 · 本地运行与服务器部署
 
-后续代码开发以 [GitHub仓库](https://github.com/chris2grey/AI-Order-Tracking-System) 和绑定的云端工作区为准，环境安装及切换步骤见 [云端开发.md](云端开发.md)。云端安装命令：`sh cloud/setup.sh`。本机现有订单与凭证继续独立保留。
+后续代码默认通过已连接的GitHub工具直接修改 [远端仓库](https://github.com/chris2grey/AI-Order-Tracking-System)，由 [Remote checks](https://github.com/chris2grey/AI-Order-Tracking-System/actions/workflows/remote-checks.yml) 在GitHub云端运行SQLite和PostgreSQL检查，无须先在本机修改代码。独立Codex Cloud环境仍需单独创建发布，当前网页连接故障尚未解决；两种方式的说明见 [云端开发.md](云端开发.md)。本机现有订单与凭证继续独立保留。
 
 2026-10-28 新增服务接口及通用部署方案：版本化 JSON API、写入防重、PostgreSQL / Redis / Gunicorn / Caddy 容器配置、私有凭证持久化，以及可校验的跨数据库备份恢复。管理员菜单新增“服务器与数据”。接口接入见 [API接口.md](API接口.md)，部署与本地数据迁移见 [服务器部署.md](服务器部署.md)。当前没有向云服务器上传数据；生产容器及真实 PostgreSQL 并发仍需目标环境验收。
 
