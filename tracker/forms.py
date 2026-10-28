@@ -86,7 +86,7 @@ class SalespersonCreationForm(UserCreationForm):
 
 class TransactionForm(StyledModelForm):
     preview_kind = 'transaction'
-    section_definitions = [('收付款信息','原币金额与流水号请按实际记录填写。',['date','amount','currency','reference']),('公司、平台与用途','一笔流水可以在下一步分给多个小项。',['party','platform','purpose']),('汇率与凭证','当日折算汇率与后续分摊的结算汇率相互独立。',['fx','fx_source','attachment'])]
+    section_definitions = [('收付款信息','原币金额与流水号请按实际记录填写。',['date','amount','currency','reference']),('公司、平台与用途','一笔流水可以在下一步分给多个小项。',['party','platform','purpose']),('汇率与凭证','本订单已填汇率自动带出，实际变动时仅调整本笔。',['fx','fx_source','attachment'])]
 
     def __init__(self, *args, kind=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -183,7 +183,7 @@ class BatchLineForm(LineForm):
         fields = ['label', 'product', 'model', 'quantity', 'price', 'currency', 'supply_type', 'supplier', 'cost', 'freight']
 
 class LineDefaultsForm(forms.Form):
-    date = forms.DateField(label='本次下单日期', widget=forms.DateInput(attrs={'type': 'date'}))
+    date = forms.DateField(label='本次下单日期', widget=forms.DateInput(format='%Y-%m-%d', attrs={'type': 'date'}))
     freight_included = forms.BooleanField(label='单价已含运费', required=False, initial=True)
     customer_terms = forms.CharField(label='客户付款约定', max_length=200, initial='发货前结清')
     supplier_terms = forms.CharField(label='供应商付款约定', max_length=200, initial='发货前结清')

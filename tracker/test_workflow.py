@@ -253,3 +253,8 @@ class WorkflowTests(TestCase):
         remember_rate(self.order,'USD','CNY',Decimal('7.4'))
         a.refresh_from_db()
         self.assertEqual((a.source_amount,a.settlement_rate,a.target_amount),(20,1,20))
+
+    def test_shared_date_uses_iso_format_for_native_date_input(self):
+        from .forms import LineDefaultsForm
+        form=LineDefaultsForm(initial={'date':date(2026,10,28)})
+        self.assertIn('value="2026-10-28"',str(form['date']))
