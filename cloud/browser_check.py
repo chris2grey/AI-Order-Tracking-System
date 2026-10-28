@@ -5,6 +5,7 @@ import sys
 import time
 import uuid
 from datetime import date
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.request import urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,6 +20,10 @@ from tracker.models import Order, Line, Transaction
 from tracker.product_import import template_bytes
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
+
+db_pool = ThreadPoolExecutor(max_workers=1)
+def db(fn):
+    return db_pool.submit(fn).result()
 
 output = Path('browser-artifacts')
 output.mkdir(exist_ok=True)
@@ -69,8 +74,8 @@ try:
         page.get_by_role('button',name='保存全部产品 →',exact=True).click()
         page.screenshot(path=str(output/'01b-product-save-result.png'),full_page=True)
         assert page.url.endswith(f'/orders/{order.pk}/'), page.locator('body').inner_text()[-7000:]
-        assert order.lines.count()==2
-        first,second=list(order.lines.all())
+        assert db(lambda: order.lines.count())==2
+        first,second=db(lambda: list(order.lines.all()))
         assert first.quote_fx==second.quote_fx
         assert second.supply_type=='self' and second.payable_total==0
 
@@ -78,7 +83,7 @@ try:
         page.goto(f'{base}/orders/{order.pk}/transactions/receipt/new/')
         page.locator('#id_currency').select_option('CNY')
         assert page.locator('#id_fx').input_value() not in ['', '1']
-        txn=Transaction.objects.create(order=order,kind='receipt',amount=1500,currency='USD',party='虚构客户',platform='测试平台',fx=1,purpose='虚构界面验收',reference=uuid.uuid4().hex,created_by=admin)
+        txn=db(lambda: Transaction.objects.create(order=order,kind='receipt',amount=1500,currency='USD',party='虚构客户',platform='测试平台',fx=1,purpose='虚构界面验收',reference=uuid.uuid4().hex,created_by=admin))
         page.goto(f'{base}/transactions/{txn.pk}/allocate/')
         page.locator('#allocation-select-all').check()
         page.get_by_role('button',name='填满所选余额',exact=True).click()
@@ -87,7 +92,7 @@ try:
         page.screenshot(path=str(output/'02-bulk-allocation.png'),full_page=True)
         page.get_by_role('button',name='确认所选分摊 →',exact=True).click()
         page.get_by_role('heading',name='这笔流水已全部分摊').wait_for()
-        assert txn.allocations.count()==2 and txn.unallocated==0
+        assert db(lambda: txn.allocations.count())==2 and db(lambda: txn.unallocated)==0
 
         page.goto(f'{base}/orders/{order.pk}/shipments/new/')
         page.get_by_role('button',name='一键全发',exact=True).click()
@@ -95,7 +100,7 @@ try:
         assert page.locator(f'[name="qty_{second.pk}"]').input_value()=='100'
         page.get_by_role('button',name='计算本批应收应付 ↓',exact=True).click()
         page.get_by_role('heading',name='本批结算预览',exact=True).wait_for()
-        assert order.shipments.count()==0
+        assert db(lambda: order.shipments.count())==0
         page.screenshot(path=str(output/'03-shipment-preview.png'),full_page=True)
         page.locator('#id_address').fill('虚构验收地址')
         page.locator('#id_carrier').fill('虚构验收货代')
@@ -103,7 +108,7 @@ try:
         page.on('dialog',lambda dialog:dialog.accept())
         page.get_by_role('button',name='确认实际发货 →',exact=True).click()
         page.wait_for_url(f'**/orders/{order.pk}/')
-        item=order.shipments.get().items.get(line=second)
+        item=db(lambda: order.shipments.get().items.get(line=second))
         assert item.cost_amount==0 and item.internal_cost_amount==400
         page.screenshot(path=str(output/'04-order-overview.png'),full_page=True)
 
@@ -119,7 +124,7 @@ try:
         page.locator('[name="product_file"]').set_input_files(str(template))
         page.get_by_role('button',name='导入并预览',exact=True).click()
         assert page.locator('#id_lines-0-product').input_value()=='虚构导入产品'
-        assert order.lines.count()==2
+        assert db(lambda: order.lines.count())==2
         page.screenshot(path=str(output/'05-import-preview.png'),full_page=True)
 
         page.goto(f'{base}/orders/{order.pk}/')
@@ -130,5 +135,6 @@ try:
         browser.close()
     print('Browser workflow passed: table entry, remembered FX, bulk allocation, shipment preview/confirm, template import, mobile layout.')
 finally:
+    db_pool.shutdown(wait=True)
     server.terminate()
     server.wait(timeout=10)

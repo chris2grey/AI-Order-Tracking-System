@@ -237,6 +237,7 @@ if(bulkForm) {
       }
       row.querySelector('.allocation-row-estimate').textContent=text;
     });
+    bulkForm.querySelectorAll('[data-allocation-rate]').forEach(input=>{input.required=rows.some(row=>row.dataset.currency===input.dataset.allocationRate && row.querySelector('[name="selected"]').checked);});
     all.checked=count>0 && count===rows.length; all.indeterminate=count>0 && count<rows.length;
     const status=document.getElementById('bulk-allocation-total');
     status.textContent='已选 '+count+' 行 · 分摊 '+centsText(used)+' '+bulkForm.dataset.source+' / 可用 '+centsText(available)+(used>available?' · 超过流水余额':'');
@@ -252,6 +253,7 @@ if(bulkForm) {
       if(!row.querySelector('[name="selected"]').checked) continue;
       const r=rate(row), due=scaled(row.dataset.due,2), input=amount(row);
       if(r===null || r<=0n){input.value='';continue;}
+      if(left<=0n){input.value='';row.querySelector('[name="selected"]').checked=false;continue;}
       const cap=(due*100000000n+49999999n)/r;
       const a=cap<left?cap:left;
       input.value=a>0n && roundedDivide(a*r,100000000n)>0n ? (a/100n)+'.'+(a%100n).toString().padStart(2,'0') : '';
