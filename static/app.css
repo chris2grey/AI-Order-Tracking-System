@@ -55,3 +55,12 @@ footer{font-size:12px;color:#637287}.lock-note small{font-size:11px}.profile sma
 @media(max-width:600px){main{padding:20px 12px}.topbar{padding:0 12px}.topbar-right .muted{display:none}.shared-grid{grid-template-columns:1fr}.panel-heading{flex-wrap:wrap;padding:16px}.rate-strip{padding:15px}.save-bar{padding:14px}.save-bar .button-row{width:100%;flex-wrap:wrap}.save-bar .btn{flex:1}.transaction-banner{gap:20px}.metrics{grid-template-columns:1fr}.tabs{gap:13px;flex-wrap:wrap}.form-grid{grid-template-columns:1fr}.bulk-table{min-width:850px}h1{font-size:23px}}
 
 .import-panel{padding:20px;display:flex;gap:20px;justify-content:space-between;align-items:center;flex-wrap:wrap}.import-panel p{color:#637287;font-size:13px;margin-top:5px}.import-panel .button-row{flex-wrap:wrap;align-items:center}.import-panel input[type=file]{max-width:280px;font-size:13px;border:0;padding:5px;min-height:auto}.product-entry .panel-heading p{max-width:720px}
+
+.entry-table td:nth-child(1),.entry-table th:nth-child(1){position:sticky;left:0}
+.entry-table td:nth-child(2),.entry-table th:nth-child(2){position:sticky;left:100px;box-shadow:3px 0 5px #182b440a}
+.entry-table td:nth-child(-n+2){background:#fff;z-index:1}
+.entry-table th:nth-child(-n+2){z-index:4;background:#edf2f8}
+.shared-settings .shared-grid{grid-template-columns:160px minmax(180px,1fr) minmax(180px,1fr) auto;align-items:end}
+.shared-settings .check-label{min-height:40px;margin:0 0 2px}
+@media(max-width:1100px){.shared-settings .shared-grid{grid-template-columns:repeat(2,minmax(180px,1fr))}}
+@media(max-width:600px){.shared-settings .shared-grid{grid-template-columns:1fr}.entry-table td:nth-child(1),.entry-table th:nth-child(1),.entry-table td:nth-child(2),.entry-table th:nth-child(2){position:static;box-shadow:none}}

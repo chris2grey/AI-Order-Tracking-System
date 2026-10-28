@@ -26,7 +26,7 @@ class WorkflowTests(TestCase):
         return Transaction.objects.create(order=self.order, kind=kind, amount=amount, currency=currency or ('USD' if kind=='receipt' else 'CNY'), party='假数据工厂', platform='测试', fx=1, purpose='假数据测试', reference=uuid.uuid4().hex, created_by=self.admin)
 
     def batch_data(self, **overrides):
-        data = {'bulk_lines':'1', 'lines-TOTAL_FORMS':'2', 'lines-INITIAL_FORMS':'0', 'lines-MIN_NUM_FORMS':'0', 'lines-MAX_NUM_FORMS':'100', 'date':'2026-10-28', 'customer_terms':'发货前结清', 'supplier_terms':'按合同', 'freight_included':'on', 'rate_USD':'7.1'}
+        data = {'bulk_lines':'1', 'line_token':str(uuid.uuid4()), 'lines-TOTAL_FORMS':'2', 'lines-INITIAL_FORMS':'0', 'lines-MIN_NUM_FORMS':'0', 'lines-MAX_NUM_FORMS':'100', 'date':'2026-10-28', 'customer_terms':'发货前结清', 'supplier_terms':'按合同', 'freight_included':'on', 'rate_USD':'7.1'}
         for i in range(2):
             data.update({f'lines-{i}-{k}':v for k,v in {'label':'', 'product':f'假数据{i}', 'model':'SAME', 'quantity':'10', 'price':'10', 'currency':'USD', 'cost':'4', 'supplier':'假数据工厂', 'supply_type':'external', 'freight':'0'}.items()})
         data.update(overrides)
@@ -258,3 +258,18 @@ class WorkflowTests(TestCase):
         from .forms import LineDefaultsForm
         form=LineDefaultsForm(initial={'date':date(2026,10,28)})
         self.assertIn('value="2026-10-28"',str(form['date']))
+
+    def test_table_retry_does_not_create_duplicate_products(self):
+        data=self.batch_data()
+        url=f'/orders/{self.order.pk}/lines/new/'
+        self.assertEqual(self.client.post(url,data).status_code,302)
+        self.assertEqual(self.client.post(url,data).status_code,302)
+        self.assertEqual(self.order.lines.count(),2)
+
+    def test_table_token_cannot_be_reused_for_different_content(self):
+        data=self.batch_data()
+        url=f'/orders/{self.order.pk}/lines/new/'
+        self.client.post(url,data)
+        data['lines-0-product']='不同内容'
+        self.assertContains(self.client.post(url,data),'其他内容')
+        self.assertEqual(self.order.lines.count(),2)

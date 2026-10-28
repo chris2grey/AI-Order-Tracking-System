@@ -55,7 +55,7 @@ try:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto(f'{base}/orders/{order.pk}/lines/new/')
-        for index in range(2):
+        for index in range(3):
             page.locator(f'#id_lines-{index}-product').fill('虚构产品 ' + str(index))
             page.locator(f'#id_lines-{index}-model').fill('UI-' + str(index))
             page.locator(f'#id_lines-{index}-quantity').fill('100')
@@ -63,19 +63,21 @@ try:
             page.locator(f'#id_lines-{index}-cost').fill('4')
         page.locator('#id_rate_USD').fill('7.1')
         page.locator('#id_lines-0-supplier').fill('虚构工厂')
+        page.locator('#id_lines-2-supplier').fill('虚构工厂')
         page.locator('#id_lines-1-supply_type').select_option('self')
         assert page.locator('#id_lines-1-supplier').input_value() == '自供货'
         page.get_by_role('button',name='＋ 添加一行',exact=True).click()
         assert page.locator('.product-row').count()==4
         page.locator('.product-row').last.get_by_role('button',name='移除此行').click()
+        page.evaluate('window.scrollTo(0,0)')
         page.screenshot(path=str(output/'01-product-table.png'),full_page=True)
         invalid = page.locator('#line-table-form').evaluate("form => [...form.querySelectorAll(':invalid')].map(e => [e.name,e.validationMessage])")
         assert not invalid, invalid
         page.get_by_role('button',name='保存全部产品 →',exact=True).click()
         page.screenshot(path=str(output/'01b-product-save-result.png'),full_page=True)
         assert page.url.endswith(f'/orders/{order.pk}/'), page.locator('body').inner_text()[-7000:]
-        assert db(lambda: order.lines.count())==2
-        first,second=db(lambda: list(order.lines.all()))
+        assert db(lambda: order.lines.count())==3
+        first,second,third=db(lambda: list(order.lines.all()))
         assert first.quote_fx==second.quote_fx
         assert second.supply_type=='self' and second.payable_total==0
 
@@ -89,6 +91,7 @@ try:
         page.get_by_role('button',name='填满所选余额',exact=True).click()
         assert page.locator(f'[name="amount_{first.pk}_pool"]').input_value()=='1000.00'
         assert page.locator(f'[name="amount_{second.pk}_pool"]').input_value()=='500.00'
+        assert not page.locator(f'[name="selected"][value="{third.pk}_pool"]').is_checked()
         page.screenshot(path=str(output/'02-bulk-allocation.png'),full_page=True)
         page.get_by_role('button',name='确认所选分摊 →',exact=True).click()
         page.get_by_role('heading',name='这笔流水已全部分摊').wait_for()
@@ -124,7 +127,7 @@ try:
         page.locator('[name="product_file"]').set_input_files(str(template))
         page.get_by_role('button',name='导入并预览',exact=True).click()
         assert page.locator('#id_lines-0-product').input_value()=='虚构导入产品'
-        assert db(lambda: order.lines.count())==2
+        assert db(lambda: order.lines.count())==3
         page.screenshot(path=str(output/'05-import-preview.png'),full_page=True)
 
         page.goto(f'{base}/orders/{order.pk}/')

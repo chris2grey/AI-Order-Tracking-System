@@ -62,9 +62,21 @@ def batch_lines(request, order):
             defaults.add_error(None, '请至少填写一行产品。')
         else:
             try:
+                try:
+                    token = uuid.UUID(request.POST.get('line_token', ''))
+                except (ValueError, TypeError, AttributeError):
+                    raise ValidationError('提交编号无效，请重新打开产品录入页面。')
+                digest = hashlib.sha256(json.dumps({key: request.POST.getlist(key) for key in request.POST if key not in ['csrfmiddlewaretoken', 'action']}, sort_keys=True).encode()).hexdigest()
                 with transaction.atomic():
                     locked = Order.objects.select_for_update().get(pk=order.pk)
                     authorize(request.user, locked, write=True)
+                    previous = ApiMutation.objects.filter(user=request.user, key=token).first()
+                    operation = f'web:lines:{order.pk}'
+                    if previous:
+                        if previous.operation != operation or previous.digest != digest:
+                            raise ValidationError('此提交编号已用于其他内容，请刷新后重新核对。')
+                        messages.info(request, '本批产品已经保存，未重复新增。')
+                        return redirect('line_new' if request.POST.get('action') == 'another' else 'order_detail', pk=order.pk)
                     labels = set(locked.lines.values_list('label', flat=True))
                     number = locked.lines.count() + 1
                     for form in rows:
@@ -88,6 +100,7 @@ def batch_lines(request, order):
                         line.save()
                         remember_rate(locked, line.currency, 'CNY', rate)
                         audit(locked, request.user, '新增订单小项', f'表格录入 / {line.label} / {line.model} / {line.quantity} pcs / {line.get_supply_type_display()}')
+                    ApiMutation.objects.create(user=request.user, key=token, operation=operation, digest=digest, response={'count': len(rows), 'order_id': order.pk}, status_code=201)
                 messages.success(request, f'已保存 {len(rows)} 行产品，同型号补单保持独立核算。')
                 return redirect('line_new' if request.POST.get('action') == 'another' else 'order_detail', pk=order.pk)
             except (ValidationError, IntegrityError) as exc:
@@ -96,7 +109,7 @@ def batch_lines(request, order):
     next_number = order.lines.count() + 1
     while order.lines.filter(label=f'{next_number:03d}').exists():
         next_number += 1
-    return render(request, 'line_table.html', {'title': '表格录入产品 / 补单', 'order': order, 'defaults': defaults, 'formset': formset, 'form': LineForm(initial={'label': f'{next_number:03d}'}), 'import_error': import_error, 'import_preview': import_preview, 'entry_hints': hints, 'rate_fields': [defaults[f'rate_{c}'] for c in ['USD', 'EUR', 'HKD', 'GBP']]})
+    return render(request, 'line_table.html', {'title': '表格录入产品 / 补单', 'order': order, 'defaults': defaults, 'formset': formset, 'form': LineForm(initial={'label': f'{next_number:03d}'}), 'line_token': request.POST.get('line_token') or uuid.uuid4(), 'import_error': import_error, 'import_preview': import_preview, 'entry_hints': hints, 'rate_fields': [defaults[f'rate_{c}'] for c in ['USD', 'EUR', 'HKD', 'GBP']]})
 
 def allocation_rows(txn):
     rows = []
