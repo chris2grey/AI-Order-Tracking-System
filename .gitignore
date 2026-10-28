@@ -35,3 +35,5 @@ venv/
 .coverage
 htmlcov/
 .test-temp/
+.cloud-data/
+.cloud-venv/
