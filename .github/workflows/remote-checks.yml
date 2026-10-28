@@ -46,7 +46,7 @@ jobs:
           --health-timeout 3s
           --health-retries 12
     env:
-      DATA_DIR: ${{ runner.temp }}/order-tracker-ci
+      DATA_DIR: /tmp/order-tracker-ci
       DJANGO_DEBUG: '0'
       POSTGRES_DB: ${{ matrix.database == 'postgres' && 'tracker_ci' || '' }}
       POSTGRES_USER: ci_user
