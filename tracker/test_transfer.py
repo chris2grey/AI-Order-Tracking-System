@@ -18,7 +18,9 @@ class TransferRestoreTests(SimpleTestCase):
         self.addCleanup(self.base_patch.stop)
         self.environment = patch.dict(os.environ, {}, clear=False)
         self.environment.start()
+        # These tests exercise SQLite transfer files, independent of the CI database.
         os.environ.pop('DATA_DIR', None)
+        os.environ.pop('POSTGRES_DB', None)
         self.addCleanup(self.environment.stop)
 
     def write_snapshot(self, extra=None, corrupt=False):
