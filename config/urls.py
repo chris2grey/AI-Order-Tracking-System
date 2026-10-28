@@ -19,6 +19,7 @@ urlpatterns = [
     path('orders/', views.orders, name='orders'),
     path('orders/new/', views.order_new, name='order_new'),
     path('orders/<int:pk>/', views.order_detail, name='order_detail'),
+    path('orders/<int:pk>/lines/template/', views.line_template, name='line_template'),
     path('orders/<int:pk>/lines/new/', views.line_new, name='line_new'),
     path('orders/<int:pk>/transactions/<str:kind>/new/', views.transaction_new, name='transaction_new'),
     path('transactions/<int:pk>/allocate/', views.allocation_new, name='allocation_new'),

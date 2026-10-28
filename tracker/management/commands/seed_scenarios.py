@@ -40,8 +40,8 @@ class Command(BaseCommand):
         self.admin = User.objects.filter(is_superuser=True, is_active=True).first()
         if not self.admin:
             raise CommandError('请先创建管理员。此命令不创建或重置任何账号密码。')
-        self.alice = User.objects.filter(username='alice', is_active=True).first() or self.admin
-        self.bob = User.objects.filter(username='bob', is_active=True).first() or self.admin
+        self.alice = User.objects.filter(username='chris', is_active=True).first() or User.objects.filter(username='alice', is_active=True).first() or self.admin
+        self.bob = User.objects.filter(username='coco', is_active=True).first() or User.objects.filter(username='bob', is_active=True).first() or self.admin
         self.today = timezone.localdate()
         self.created = []
         self.created_files = []

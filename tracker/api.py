@@ -17,7 +17,7 @@ from django.shortcuts import get_object_or_404
 
 from .forms import OrderForm, LineForm, TransactionForm, AllocationForm, ShipmentForm
 from .models import Order, Transaction, Shipment, ApiMutation
-from .services import visible_orders, with_order_data, authorize, summary, audit, allocate, confirm_shipment, shipment_quote
+from .services import visible_orders, with_order_data, authorize, summary, audit, allocate, confirm_shipment, shipment_quote, rate_for, remember_rate
 from .throttle import login_limited
 
 logger = logging.getLogger(__name__)
@@ -145,13 +145,13 @@ def values(instance, names):
 def order_data(order):
     s = summary(order)
     return {**values(order, 'id number customer owner_id date notes status created_at'),
-            'totals': {**{k: s[k] for k in ['currencies', 'cost', 'payment', 'payable', 'quantity', 'shipped', 'complete']},
+            'totals': {**{k: s[k] for k in ['currencies', 'cost', 'external_cost', 'internal_cost', 'payment', 'payable', 'quantity', 'shipped', 'complete']},
                        'unallocated_count': len(s['unallocated'])}}
 
 
 def line_data(line):
-    return {**values(line, 'id order_id label product model date quantity price currency quote_fx cost supplier freight_included freight customer_terms supplier_terms'),
-            'sale_total': line.sale_total, 'cost_total': line.cost_total}
+    return {**values(line, 'id order_id label product model date quantity price currency quote_fx cost supply_type supplier freight_included freight customer_terms supplier_terms'),
+            'sale_total': line.sale_total, 'cost_total': line.cost_total, 'payable_total': line.payable_total}
 
 
 def allocation_data(item):
@@ -167,7 +167,7 @@ def transaction_data(item):
 
 def shipment_data(ship):
     return {**values(ship, 'id order_id reference date address carrier_type carrier domestic_date domestic_tracking international_tracking freight freight_currency notes created_by_id'),
-            'items': [{**values(i, 'id line_id quantity sale_amount cost_amount receipt_reserved payment_reserved'),
+            'items': [{**values(i, 'id line_id quantity sale_amount cost_amount internal_cost_amount receipt_reserved payment_reserved'),
                        'receivable': i.due('receipt'), 'payable': i.due('payment')} for i in ship.items.all()]}
 
 
@@ -249,6 +249,9 @@ def lines(request, pk):
     if request.method == 'GET':
         return paginated(request, order.lines.all(), line_data)
     data = payload(request)
+    data = dict(data)
+    if not data.get('quote_fx'):
+        data['quote_fx'] = rate_for(order, data.get('currency', 'USD'), 'CNY') or ''
     form = LineForm(data)
     only_fields(data, form.fields)
     validate_form(form)
@@ -256,6 +259,7 @@ def lines(request, pk):
     line.order = order
     line.full_clean()
     line.save()
+    remember_rate(order, line.currency, 'CNY', line.quote_fx)
     audit(order, request.user, '新增订单小项', f'API / {line.label} / {line.quantity} pcs')
     return JsonResponse(line_data(line), status=201)
 
@@ -269,6 +273,9 @@ def transactions(request, pk):
     kind = data.get('kind')
     if kind not in ('receipt', 'payment'):
         raise ValidationError('kind 必须是 receipt 或 payment。')
+    data = dict(data)
+    if not data.get('fx'):
+        data['fx'] = rate_for(order, data.get('currency', ''), 'USD' if kind == 'receipt' else 'CNY') or ''
     form = TransactionForm(data, request.FILES, kind=kind)
     only_fields(data, [*form.fields, 'kind'])
     only_fields(request.FILES, ['attachment'])
@@ -279,6 +286,7 @@ def transactions(request, pk):
         raise ValidationError('原币与等值币种相同，当日汇率须为1。')
     item.full_clean()
     item.save()
+    remember_rate(order, item.currency, item.target_currency, item.fx)
     audit(order, request.user, '录入收款' if kind == 'receipt' else '录入付款', f'API / #{item.pk} / {item.reference}')
     return JsonResponse(transaction_data(item), status=201)
 
@@ -288,6 +296,11 @@ def allocations(request, pk):
     txn = get_object_or_404(Transaction, pk=pk, order__in=visible_orders(request.user))
     order = accessible(request.user, txn.order_id, write=True, admin=True)
     data = payload(request)
+    data = dict(data)
+    if not data.get('rate'):
+        selected = order.lines.filter(pk=data.get('line')).first() if str(data.get('line', '')).isdigit() else None
+        if selected:
+            data['rate'] = rate_for(order, txn.currency, selected.currency if txn.kind == 'receipt' else 'CNY') or ''
     form = AllocationForm(data, order=order, txn=txn)
     only_fields(data, form.fields)
     d = validate_form(form)

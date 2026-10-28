@@ -46,8 +46,8 @@ def workbook(sheets):
     return out.getvalue()
 
 def archive_bytes(order):
-    common_headers = ['订单号', '客户', '业务员', '小项', '下单日期', '产品', '型号', '数量', '销售单价', '币种', '报价汇率 CNY/销售币', '销售总额', '单位成本 CNY', '采购总额 CNY', '供应商', '单价含运费', '客户运费', '客户条款', '供应商条款']
-    common = [[order.number, order.customer, order.owner.get_full_name() or order.owner.username, l.label, l.date.isoformat(), l.product, l.model, l.quantity, l.price, l.currency, l.quote_fx, l.sale_total, l.cost, l.cost_total, l.supplier, str(l.freight_included), l.freight, l.customer_terms, l.supplier_terms] for l in order.lines.all()]
+    common_headers = ['订单号', '客户', '业务员', '小项', '下单日期', '产品', '型号', '数量', '销售单价', '币种', '报价汇率 CNY/销售币', '销售总额', '单位成本 CNY', '采购总额 CNY', '供应商', '单价含运费', '客户运费', '客户条款', '供应商条款', '供货方式', '对外货款 CNY']
+    common = [[order.number, order.customer, order.owner.get_full_name() or order.owner.username, l.label, l.date.isoformat(), l.product, l.model, l.quantity, l.price, l.currency, l.quote_fx, l.sale_total, l.cost, l.cost_total, l.supplier, str(l.freight_included), l.freight, l.customer_terms, l.supplier_terms, l.get_supply_type_display(), l.payable_total] for l in order.lines.all()]
     files = {}
     for kind, filename in [('receipt', '客户收款表.xlsx'), ('payment', '供应商付款表.xlsx')]:
         transactions, allocations = [], []
@@ -66,8 +66,8 @@ def archive_bytes(order):
     shipments = []
     for s in order.shipments.all():
         for i in s.items.select_related('line'):
-            shipments.append([s.id, s.date.isoformat(), i.line.label, i.line.product, i.line.model, i.quantity, i.sale_amount, i.line.currency, i.receipt_reserved, i.covered('receipt'), i.due('receipt'), i.cost_amount, i.payment_reserved, i.covered('payment'), i.due('payment'), s.address, s.get_carrier_type_display(), s.carrier, str(s.domestic_date or ''), s.domestic_tracking, s.international_tracking, s.freight, s.freight_currency, s.notes])
-    files['发货表.xlsx'] = workbook([('发货明细', ['批次', '日期', '小项', '产品', '型号', '数量', '本批货值', '销售币种', '确认时占用客户预付款', '目前已覆盖客户款', '本批待收', '本批成本 CNY', '确认时占用供应商预付款', '目前已覆盖供应商款', '本批待付 CNY', '收货地址', '运输方', '货代', '国内日期', '国内单号', '国际单号', '批次运费(同批多行勿重复汇总)', '运费币种', '备注'], shipments), ('订单小项快照', common_headers, common)])
+            shipments.append([s.id, s.date.isoformat(), i.line.label, i.line.product, i.line.model, i.quantity, i.sale_amount, i.line.currency, i.receipt_reserved, i.covered('receipt'), i.due('receipt'), i.cost_amount, i.payment_reserved, i.covered('payment'), i.due('payment'), s.address, s.get_carrier_type_display(), s.carrier, str(s.domestic_date or ''), s.domestic_tracking, s.international_tracking, s.freight, s.freight_currency, s.notes, i.internal_cost_amount])
+    files['发货表.xlsx'] = workbook([('发货明细', ['批次', '日期', '小项', '产品', '型号', '数量', '本批货值', '销售币种', '确认时占用客户预付款', '目前已覆盖客户款', '本批待收', '本批对外货款 CNY', '确认时占用供应商预付款', '目前已覆盖供应商款', '本批待付 CNY', '收货地址', '运输方', '货代', '国内日期', '国内单号', '国际单号', '批次运费(同批多行勿重复汇总)', '运费币种', '备注', '本批内部成本 CNY'], shipments), ('订单小项快照', common_headers, common)])
     files['审计记录.json'] = json.dumps([{'time': a.created_at.isoformat(), 'actor': a.actor.username, 'action': a.action, 'detail': a.detail} for a in order.audits.select_related('actor')], ensure_ascii=False, indent=2).encode('utf-8')
     manifest = {'order': order.number, 'complete': summary(order)['complete'], 'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
     files['校验清单.json'] = json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8')

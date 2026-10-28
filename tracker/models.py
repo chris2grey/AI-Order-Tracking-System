@@ -21,6 +21,7 @@ class Order(models.Model):
     date = models.DateField('下单日期', default=timezone.localdate)
     notes = models.TextField('备注', blank=True)
     status = models.CharField(max_length=16, choices=[('active', '进行中'), ('locked', '已锁定归档')], default='active')
+    exchange_rates = models.JSONField('本订单常用汇率', default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -40,7 +41,8 @@ class Line(models.Model):
     currency = models.CharField('销售币种', max_length=3, choices=CURRENCIES, default='USD')
     quote_fx = models.DecimalField('报价汇率：1 销售币种 = 多少 CNY', max_digits=16, decimal_places=8, default=Decimal('7'))
     cost = models.DecimalField('人民币单位成本', max_digits=16, decimal_places=4)
-    supplier = models.CharField('供应商名称', max_length=160)
+    supply_type = models.CharField('供货方式', max_length=10, choices=[('external', '外部供应商'), ('self', '自供货')], default='external')
+    supplier = models.CharField('供应商名称', max_length=160, blank=True)
     freight_included = models.BooleanField('销售单价已含运费', default=True)
     freight = models.DecimalField('客户运费总额（已含则仅备注）', max_digits=16, decimal_places=2, default=ZERO)
     customer_terms = models.CharField('客户付款约定', max_length=200, default='发货前结清')
@@ -57,6 +59,10 @@ class Line(models.Model):
     @property
     def cost_total(self):
         return money(self.cost * self.quantity)
+
+    @property
+    def payable_total(self):
+        return ZERO if self.supply_type == 'self' else self.cost_total
 
     def __str__(self):
         return f'{self.label} · {self.model} · {self.quantity} pcs'
@@ -118,6 +124,7 @@ class ShipmentLine(models.Model):
     quantity = models.PositiveIntegerField()
     sale_amount = models.DecimalField(max_digits=18, decimal_places=2)
     cost_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    internal_cost_amount = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO)
     receipt_reserved = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO)
     payment_reserved = models.DecimalField(max_digits=18, decimal_places=2, default=ZERO)
 

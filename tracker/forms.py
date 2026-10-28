@@ -4,7 +4,7 @@ from django import forms
 from django.contrib.auth.models import User
 from django.contrib.auth.forms import UserCreationForm
 from django.core.exceptions import ValidationError
-from .models import Order, Line, Transaction, Shipment
+from .models import Order, Line, Transaction, Shipment, CURRENCIES
 
 class StyledModelForm(forms.ModelForm):
     section_definitions = []
@@ -44,10 +44,19 @@ class OrderForm(StyledModelForm):
 
 class LineForm(StyledModelForm):
     preview_kind = 'line'
-    section_definitions = [('产品与数量','同型号的不同补单也要分别记录。',['label','date','product','model','quantity']),('销售报价与运费','报价汇率用于记录定价依据，不自动抵扣收款。',['price','currency','quote_fx','freight_included','freight']),('供应商与结算约定','采购成本按人民币核算；付款约定分别保存。',['supplier','cost','customer_terms','supplier_terms'])]
+    section_definitions = [('产品与数量','同型号的不同补单也要分别记录。',['label','date','product','model','quantity']),('销售报价与运费','报价汇率用于记录定价依据，不自动抵扣收款。',['price','currency','quote_fx','freight_included','freight']),('供应商与结算约定','采购成本按人民币核算；付款约定分别保存。',['supply_type','supplier','cost','customer_terms','supplier_terms'])]
     class Meta:
         model = Line
         exclude = ['order']
+
+    def __init__(self, *args, **kwargs):
+        if args and args[0] is not None:
+            data = args[0].copy()
+            if 'supply_type' not in data:
+                data['supply_type'] = 'external'
+            args = (data, *args[1:])
+        super().__init__(*args, **kwargs)
+        self.fields['supplier'].required = False
 
     def clean(self):
         data = super().clean()
@@ -57,8 +66,12 @@ class LineForm(StyledModelForm):
         for field in ['cost', 'freight']:
             if data.get(field) is not None and data[field] < 0:
                 self.add_error(field, '不能小于零。')
-        if data.get('currency') == 'CNY' and data.get('quote_fx') != 1:
+        if 'quote_fx' in self.fields and data.get('currency') == 'CNY' and data.get('quote_fx') != 1:
             self.add_error('quote_fx', '销售币种为人民币，报价汇率必须为 1。')
+        if data.get('supply_type') == 'self':
+            data['supplier'] = '自供货'
+        elif not data.get('supplier', '').strip():
+            self.add_error('supplier', '外部供货请填写供应商名称。')
         return data
 
 class SalespersonCreationForm(UserCreationForm):
@@ -73,7 +86,7 @@ class SalespersonCreationForm(UserCreationForm):
 
 class TransactionForm(StyledModelForm):
     preview_kind = 'transaction'
-    section_definitions = [('收付款信息','原币金额与流水号请按实际记录填写。',['date','amount','currency','reference']),('公司、平台与用途','一笔流水可以在下一步分给多个小项。',['party','platform','purpose']),('汇率与凭证','当日折算汇率与后续分摊的结算汇率相互独立。',['fx','fx_source','attachment'])]
+    section_definitions = [('收付款信息','原币金额与流水号请按实际记录填写。',['date','amount','currency','reference']),('公司、平台与用途','一笔流水可以在下一步分给多个小项。',['party','platform','purpose']),('汇率与凭证','本订单已填汇率自动带出，实际变动时仅调整本笔。',['fx','fx_source','attachment'])]
 
     def __init__(self, *args, kind=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -155,3 +168,28 @@ class AllocationForm(forms.Form):
             self.fields['amount'].help_text = f'这笔流水尚可分摊 {txn.unallocated} {txn.currency}。'
         if len(eligible)==1:
             self.fields['line'].initial = eligible[0]
+
+class BatchLineForm(LineForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['label'].required = False
+        self.fields['label'].widget.attrs['placeholder'] = '自动编号'
+        for name in ['product', 'model', 'supplier']:
+            self.fields[name].widget.attrs['list'] = f'entry-{name}-options'
+            self.fields[name].widget.attrs['autocomplete'] = 'off'
+
+    class Meta:
+        model = Line
+        fields = ['label', 'product', 'model', 'quantity', 'price', 'currency', 'supply_type', 'supplier', 'cost', 'freight']
+
+class LineDefaultsForm(forms.Form):
+    date = forms.DateField(label='本次下单日期', widget=forms.DateInput(format='%Y-%m-%d', attrs={'type': 'date'}))
+    freight_included = forms.BooleanField(label='单价已含运费', required=False, initial=True)
+    customer_terms = forms.CharField(label='客户付款约定', max_length=200, initial='发货前结清')
+    supplier_terms = forms.CharField(label='供应商付款约定', max_length=200, initial='发货前结清')
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for currency, label in CURRENCIES:
+            if currency == 'CNY':
+                continue
+            self.fields[f'rate_{currency}'] = forms.DecimalField(label=f'1 {currency} = CNY', max_digits=16, decimal_places=8, min_value=Decimal('0.00000001'), required=False)

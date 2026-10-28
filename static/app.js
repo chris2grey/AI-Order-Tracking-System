@@ -19,6 +19,7 @@ document.querySelectorAll('form[data-unsaved]').forEach(form => {
   form.addEventListener('input', () => { dirty = true; });
   form.addEventListener('change', () => { dirty = true; });
   form.addEventListener('submit', event => {
+    if (event.defaultPrevented) return;
     if (form.dataset.submitting) { event.preventDefault(); return; }
     form.dataset.submitting = 'true'; dirty = false; form.setAttribute('aria-busy','true');
     const button = event.submitter;
@@ -45,7 +46,10 @@ if (previewForm) {
     const target = kind === 'line' ? 'CNY' : previewForm.dataset.target;
     const same = fields.currency.value === target;
     rate.readOnly = same;
-    if (same) rate.value = '1'; else if (changed) rate.value = '';
+    if (same) rate.value = '1'; else if (changed) {
+      const saved = document.getElementById('order-rates');
+      rate.value = saved ? (JSON.parse(saved.textContent)[fields.currency.value] || '') : '';
+    }
     const label = previewForm.querySelector(`label[for="${rate.id}"]`);
     label.textContent = `${kind==='line'?'报价':'当日'}汇率：1 ${fields.currency.value} = 多少 ${target} *`;
   }
@@ -61,7 +65,7 @@ if (previewForm) {
     } else {
       const amount=scaled(fields.amount.value,2), rate=scaled(fields.fx.value,8);
       primary.textContent=amount!==null && rate!==null ? `当日等值 ${centsText(roundedDivide(amount*rate,100000000n))} ${previewForm.dataset.target}` : '填写原币金额与当日汇率后自动计算';
-      secondary.textContent='订单抵扣金额将在分摊时按结算汇率另行确认。';
+      secondary.textContent='同币种换算自动为 1，已有订单汇率会在分摊时自动复用。';
     }
   }
   fields.currency.addEventListener('change', () => { syncRate(true); calculate(); });
@@ -146,4 +150,156 @@ if (canvas) {
     ctx.font='10px "Segoe UI",sans-serif';ctx.fillStyle='#879495';ctx.textAlign='left';ctx.fillText('USD',left,14);ctx.textAlign='right';ctx.fillText('CNY',right,14);
   }
   draw(); window.addEventListener('resize', draw);
+}
+
+const productForm = document.getElementById('line-table-form');
+if (productForm) {
+  const body = document.getElementById('product-rows');
+  const total = document.getElementById('id_lines-TOTAL_FORMS');
+  function refreshProducts() {
+    const totals = {};
+    let costs = 0n, count = 0;
+    const used = new Set();
+    for (const row of body.querySelectorAll('.product-row')) {
+      const field = n => row.querySelector('[name$="-'+n+'"]');
+      const self = field('supply_type').value === 'self';
+      field('supplier').readOnly = self;
+      field('supplier').required = false;
+      if (self) { if(field('supplier').value!=='自供货') field('supplier').dataset.external=field('supplier').value; field('supplier').value='自供货'; }
+      else if(field('supplier').value==='自供货') field('supplier').value=field('supplier').dataset.external || '';
+      const active = ['product','model','quantity','price','cost','label'].some(n=>field(n).value);
+      if (!active) continue;
+      count++;
+      const currency=field('currency').value;
+      used.add(currency);
+      const qty=scaled(field('quantity').value,0), price=scaled(field('price').value,4), cost=scaled(field('cost').value,4), freight=scaled(field('freight').value || '0',2);
+      if(qty!==null && price!==null && freight!==null) totals[currency]=(totals[currency]||0n)+roundedDivide(qty*price,100n)+(productForm.elements.freight_included.checked?0n:freight);
+      if(qty!==null && cost!==null) costs+=roundedDivide(qty*cost,100n);
+    }
+    productForm.querySelectorAll('[data-rate-currency]').forEach(label=>{
+      const needed=used.has(label.dataset.rateCurrency);
+      label.hidden=!needed; label.querySelector('input').required=needed;
+    });
+    document.getElementById('line-table-estimate').textContent=count+' 行 · '+Object.entries(totals).map(([c,v])=>c+' '+centsText(v)).join(' / ')+' · 成本 CNY '+centsText(costs);
+  }
+  function reindex() {
+    body.querySelectorAll('.product-row').forEach((row,index)=>{
+      row.querySelectorAll('[name]').forEach(input=>{
+        input.name=input.name.replace(/lines-\d+-/,'lines-'+index+'-');
+        input.id=input.id.replace(/lines-\d+-/,'lines-'+index+'-');
+      });
+    });
+    total.value=body.children.length;
+  }
+  document.getElementById('add-product-row').addEventListener('click',()=>{
+    if(Number(total.value)>=100) return;
+    const markup=document.getElementById('empty-product-row').innerHTML.replaceAll('__prefix__', total.value);
+    body.insertAdjacentHTML('beforeend',markup);
+    total.value=Number(total.value)+1;
+    body.lastElementChild.querySelector('[name$="-product"]').focus();
+    refreshProducts();
+  });
+  body.addEventListener('click',event=>{
+    if(event.target.closest('.row-remove')) {
+      event.target.closest('.product-row').remove(); reindex(); refreshProducts();
+      productForm.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+  });
+  productForm.addEventListener('input',refreshProducts);
+  productForm.addEventListener('change',refreshProducts);
+  refreshProducts();
+}
+
+const bulkForm=document.getElementById('bulk-allocation-form');
+if(bulkForm) {
+  const rows=[...bulkForm.querySelectorAll('[data-allocation-row]')];
+  const available=scaled(bulkForm.dataset.available,2);
+  const checks=()=>rows.map(r=>r.querySelector('[name="selected"]'));
+  const amount=row=>row.querySelector('input[type="number"]');
+  const rate=row=>scaled(bulkForm.elements['rate_'+row.dataset.currency].value,8);
+  const all=document.getElementById('allocation-select-all');
+  function updateBulk(){
+    let used=0n,count=0;
+    rows.forEach(row=>{
+      const selected=row.querySelector('[name="selected"]').checked;
+      row.classList.toggle('is-selected',selected);
+      const input=amount(row), a=scaled(input.value,2), r=rate(row), due=scaled(row.dataset.due,2);
+      input.required=selected; input.setCustomValidity('');
+      let text='—';
+      if(selected){
+        count++;
+        if(a!==null) used+=a;
+        if(a!==null && r!==null && r>0n){
+          const target=roundedDivide(a*r,100000000n);
+          text=centsText(target)+' '+row.dataset.currency;
+          if(target>due || target<=0n) input.setCustomValidity('抵扣金额须大于零且不能超过本行待结算金额');
+        }
+      }
+      row.querySelector('.allocation-row-estimate').textContent=text;
+    });
+    bulkForm.querySelectorAll('[data-allocation-rate]').forEach(input=>{input.required=rows.some(row=>row.dataset.currency===input.dataset.allocationRate && row.querySelector('[name="selected"]').checked);});
+    all.checked=count>0 && count===rows.length; all.indeterminate=count>0 && count<rows.length;
+    const status=document.getElementById('bulk-allocation-total');
+    status.textContent='已选 '+count+' 行 · 分摊 '+centsText(used)+' '+bulkForm.dataset.source+' / 可用 '+centsText(available)+(used>available?' · 超过流水余额':'');
+    status.classList.toggle('attention',used>available);
+    return {count,used};
+  }
+  function selectAll(value){checks().forEach(c=>c.checked=value);updateBulk();bulkForm.dispatchEvent(new Event('input',{bubbles:true}));}
+  all.addEventListener('change',()=>selectAll(all.checked));
+  bulkForm.querySelector('[data-select-all]').addEventListener('click',()=>selectAll(!checks().every(c=>c.checked)));
+  document.getElementById('fill-allocations').addEventListener('click',()=>{
+    let left=available;
+    for(const row of rows){
+      if(!row.querySelector('[name="selected"]').checked) continue;
+      const r=rate(row), due=scaled(row.dataset.due,2), input=amount(row);
+      if(r===null || r<=0n){input.value='';continue;}
+      if(left<=0n){input.value='';row.querySelector('[name="selected"]').checked=false;continue;}
+      const cap=(due*100000000n+49999999n)/r;
+      const a=cap<left?cap:left;
+      input.value=a>0n && roundedDivide(a*r,100000000n)>0n ? (a/100n)+'.'+(a%100n).toString().padStart(2,'0') : '';
+      if(input.value) left-=a;
+    }
+    bulkForm.dispatchEvent(new Event('input',{bubbles:true}));updateBulk();
+  });
+  document.getElementById('clear-allocations').addEventListener('click',()=>{rows.forEach(row=>amount(row).value='');bulkForm.dispatchEvent(new Event('input',{bubbles:true}));updateBulk();});
+  bulkForm.addEventListener('input',event=>{if(event.target!==all)updateBulk();});
+  bulkForm.addEventListener('change',updateBulk);
+  bulkForm.addEventListener('submit',event=>{
+    const s=updateBulk();
+    if(!s.count || s.used>available || !bulkForm.reportValidity()){
+      event.preventDefault();
+      if(!s.count) document.getElementById('bulk-allocation-total').textContent='请先勾选分摊对象';
+    }
+  },{capture:true});
+  updateBulk();
+}
+
+const shipForm=document.getElementById('shipment-entry-form');
+if(shipForm){
+  const rows=[...shipForm.querySelectorAll('[data-shipment-row]')];
+  const all=document.getElementById('shipment-select-all');
+  function updateShipment(){
+    let count=0,units=0;
+    rows.forEach(row=>{
+      const input=row.querySelector('[data-shipment-quantity]');
+      const qty=Number(input.value || 0);
+      if(qty>0){count++;units+=qty;}
+      row.classList.toggle('is-selected',qty>0);
+    });
+    document.getElementById('shipment-selection-summary').textContent='本次 '+count+' 个小项 · '+units.toLocaleString()+' 件。请计算预览后确认实际发货。';
+  }
+  all.addEventListener('change',()=>rows.forEach(row=>{const c=row.querySelector('[data-shipment-select]');if(!c.disabled)c.checked=all.checked;}));
+  function fillShipment(mode){
+    rows.forEach(row=>{
+      const input=row.querySelector('[data-shipment-quantity]'),checked=row.querySelector('[data-shipment-select]').checked;
+      if(mode==='clear') input.value=0;
+      else if(mode==='all'||checked) input.value=input.max;
+    });
+    shipForm.dispatchEvent(new Event('input',{bubbles:true}));updateShipment();
+  }
+  document.getElementById('ship-all').addEventListener('click',()=>fillShipment('all'));
+  document.getElementById('ship-selected').addEventListener('click',()=>fillShipment('selected'));
+  document.getElementById('ship-clear').addEventListener('click',()=>fillShipment('clear'));
+  shipForm.addEventListener('input',updateShipment);
+  updateShipment();
 }
