@@ -6,4 +6,4 @@
 {% for section in form.sections %}<div class="form-section"><div class="form-section-heading"><span>{{ forloop.counter|stringformat:'02d' }}</span><div><h2>{{ section.title }}</h2><p>{{ section.description }}</p></div></div><div class="form-grid">{% for field in section.fields %}{% include 'field.html' %}{% endfor %}</div></div>{% endfor %}
 {% if form.preview_kind %}<div class="form-estimate" aria-live="polite"><div><small>当前填写内容 · 金额预览</small><strong id="estimate-primary">填写金额与数量后自动计算</strong></div><div id="estimate-secondary"></div><small>保存时以系统精确核算结果为准。</small></div>{% endif %}
 <div class="form-footer"><span class="muted">带 * 为必填项；确认后记录操作人及时间。</span><div class="button-row">{% if form.preview_kind == 'line' %}<button class="btn secondary" name="action" value="another">保存并继续新增</button>{% endif %}<button class="btn primary">{% if not order %}创建订单，录入产品 →{% elif form.preview_kind == 'transaction' %}保存流水，去分摊 →{% else %}保存并返回订单 →{% endif %}</button></div></div></form></section>
-{% endblock %}
+{% if order_rates %}{{ order_rates|json_script:'order-rates' }}{% endif %}{% include 'entry_suggestions.html' %}{% endblock %}

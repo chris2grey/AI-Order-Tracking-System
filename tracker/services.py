@@ -31,7 +31,7 @@ def line_summary(line):
     shipped = sum((s.quantity for s in line.shipment_items.all()), 0)
     receipt = allocated(line, 'receipt')
     payment = allocated(line, 'payment')
-    return {'line': line, 'sale': line.sale_total, 'cost': line.cost_total, 'receipt': receipt, 'payment': payment, 'receivable': money(line.sale_total - receipt), 'payable': money(line.cost_total - payment), 'receipt_pct': percent(receipt, line.sale_total), 'payment_pct': percent(payment, line.cost_total), 'shipped': shipped, 'remaining': line.quantity - shipped, 'ship_pct': percent(shipped, line.quantity)}
+    return {'line': line, 'sale': line.sale_total, 'cost': line.cost_total, 'external_cost': line.payable_total, 'internal_cost': line.cost_total if line.supply_type == 'self' else ZERO, 'receipt': receipt, 'payment': payment, 'receivable': money(line.sale_total - receipt), 'payable': money(line.payable_total - payment), 'receipt_pct': percent(receipt, line.sale_total), 'payment_pct': percent(payment, line.payable_total), 'shipped': shipped, 'remaining': line.quantity - shipped, 'ship_pct': percent(shipped, line.quantity)}
 
 def percent(value, total):
     if not total:
@@ -50,12 +50,14 @@ def summary(order):
         for k in t:
             t[k] += r[k]
     cost = sum((r['cost'] for r in rows), ZERO)
+    external_cost = sum((r['external_cost'] for r in rows), ZERO)
+    internal_cost = sum((r['internal_cost'] for r in rows), ZERO)
     payment = sum((r['payment'] for r in rows), ZERO)
     units = sum(r['line'].quantity for r in rows)
     shipped = sum(r['shipped'] for r in rows)
     unallocated = [t for t in order.transactions.all() if t.unallocated > 0]
     complete = bool(rows) and all(r['receivable'] == 0 and r['payable'] == 0 and r['remaining'] == 0 for r in rows) and not unallocated
-    return {'rows': rows, 'currencies': currencies, 'cost': cost, 'payment': payment, 'payable': money(cost - payment), 'payment_pct': percent(payment, cost), 'quantity': units, 'shipped': shipped, 'ship_pct': percent(shipped, units), 'unallocated': unallocated, 'complete': complete}
+    return {'rows': rows, 'currencies': currencies, 'cost': cost, 'external_cost': external_cost, 'internal_cost': internal_cost, 'payment': payment, 'payable': money(external_cost - payment), 'payment_pct': percent(payment, external_cost), 'quantity': units, 'shipped': shipped, 'ship_pct': percent(shipped, units), 'unallocated': unallocated, 'complete': complete}
 
 @db_transaction.atomic
 def allocate(user, txn_id, line_id, amount, rate, reason, shipment_item_id=None):
@@ -74,10 +76,12 @@ def allocate(user, txn_id, line_id, amount, rate, reason, shipment_item_id=None)
     target_currency = line.currency if txn.kind == 'receipt' else 'CNY'
     if txn.currency == target_currency and rate != 1:
         raise ValidationError('原币与结算币种相同，结算汇率必须为 1。')
+    if txn.kind == 'payment' and line.supply_type == 'self':
+        raise ValidationError('自供货只记录内部成本，不接受供应商付款分摊。')
     if txn.kind == 'payment' and txn.party.strip() != line.supplier.strip():
         raise ValidationError('付款供应商必须与小项供应商一致。')
     target = money(amount * rate)
-    total = line.sale_total if txn.kind == 'receipt' else line.cost_total
+    total = line.sale_total if txn.kind == 'receipt' else line.payable_total
     if amount > txn.unallocated:
         raise ValidationError('分摊金额超过这笔流水的未分配金额。')
     if target <= 0 or target > money(total - allocated(line, txn.kind)):
@@ -89,8 +93,11 @@ def allocate(user, txn_id, line_id, amount, rate, reason, shipment_item_id=None)
             raise ValidationError('发货批次不匹配，或超过本批待结算金额。')
     elif any(s.due(txn.kind) > 0 for s in line.shipment_items.all()):
         raise ValidationError('此小项存在已发货未结算批次，请指定该批次分摊；需要跨批时分多次操作。')
+    if not str(reason).strip():
+        raise ValidationError('请填写分摊说明。')
     allocation = Allocation.objects.create(transaction=txn, line=line, shipment_item=item, source_amount=amount, settlement_rate=rate, target_amount=target, reason=reason, created_by=user)
     audit(order, user, '款项分摊', f'流水 #{txn.id} → {line.label}：{amount} {txn.currency} = {target} {target_currency}；批次 {item.shipment_id if item else "未发货资金池"}；{reason}')
+    remember_rate(order, txn.currency, target_currency, rate)
     return allocation
 
 def shipment_quote(line, quantity):
@@ -99,8 +106,10 @@ def shipment_quote(line, quantity):
     remaining = line.quantity - sum(s.quantity for s in previous)
     if quantity <= 0 or quantity > remaining:
         raise ValidationError(f'{line.label}：发货数量须大于零且不超过未发数量 {remaining}。')
-    result = {'line': line, 'quantity': quantity}
-    for kind, total, field, reserved in [('receipt', line.sale_total, 'sale_amount', 'receipt_reserved'), ('payment', line.cost_total, 'cost_amount', 'payment_reserved')]:
+    remaining_cost = line.cost_total - sum((s.internal_cost_amount for s in previous), ZERO)
+    internal_cost = remaining_cost if quantity == remaining else money(remaining_cost * quantity / remaining)
+    result = {'line': line, 'quantity': quantity, 'internal_cost': internal_cost}
+    for kind, total, field, reserved in [('receipt', line.sale_total, 'sale_amount', 'receipt_reserved'), ('payment', line.payable_total, 'cost_amount', 'payment_reserved')]:
         remaining_value = total - sum((getattr(s, field) for s in previous), ZERO)
         batch_value = remaining_value if quantity == remaining else money(remaining_value * quantity / remaining)
         pool = sum((a.target_amount for a in line.allocations.filter(transaction__kind=kind, shipment_item__isnull=True)), ZERO)
@@ -130,6 +139,42 @@ def confirm_shipment(user, order_id, quantities, data, token):
         raise ValidationError('请至少选择一个发货小项并填写数量。')
     shipment = Shipment.objects.create(order=order, created_by=user, reference=token, **data)
     for q in quotes:
-        ShipmentLine.objects.create(shipment=shipment, line=q['line'], quantity=q['quantity'], sale_amount=q['receipt']['total'], cost_amount=q['payment']['total'], receipt_reserved=q['receipt']['covered'], payment_reserved=q['payment']['covered'])
+        ShipmentLine.objects.create(shipment=shipment, line=q['line'], quantity=q['quantity'], sale_amount=q['receipt']['total'], cost_amount=q['payment']['total'], internal_cost_amount=q['internal_cost'], receipt_reserved=q['receipt']['covered'], payment_reserved=q['payment']['covered'])
     audit(order, user, '确认发货', f'批次 #{shipment.id}；共 {sum(q["quantity"] for q in quotes)} pcs；占款快照已保存')
     return shipment
+
+def order_rates(order):
+    """Defaults for new entries only; historical records and rates stay unchanged."""
+    rates = {}
+    for line in order.lines.all():
+        rates[f'{line.currency}:CNY'] = str(line.quote_fx)
+    # Old orders acquire sensible defaults without rewriting their accounting.
+    for txn in order.transactions.order_by('date', 'id'):
+        rates[f'{txn.currency}:{txn.target_currency}'] = str(txn.fx)
+    rates.update(order.exchange_rates or {})
+    return rates
+
+def rate_for(order, source, target):
+    if source == target:
+        return Decimal('1')
+    rates = order_rates(order)
+    direct = rates.get(f'{source}:{target}')
+    if direct:
+        return Decimal(direct)
+    # A rate can be derived through CNY only when both legs are known.
+    source_cny = Decimal('1') if source == 'CNY' else Decimal(rates[f'{source}:CNY']) if f'{source}:CNY' in rates else None
+    target_cny = Decimal('1') if target == 'CNY' else Decimal(rates[f'{target}:CNY']) if f'{target}:CNY' in rates else None
+    if source_cny and target_cny:
+        return (source_cny / target_cny).quantize(Decimal('0.00000001'), rounding=ROUND_HALF_UP)
+    return None
+
+def remember_rate(order, source, target, rate):
+    rate = Decimal(str(rate))
+    if not rate.is_finite() or rate <= 0 or (source == target and rate != 1):
+        raise ValidationError('汇率必须大于零，同币种汇率必须为 1。')
+    rates = dict(order.exchange_rates or {})
+    key = f'{source}:{target}'
+    if rates.get(key) != str(rate):
+        rates[key] = str(rate)
+        order.exchange_rates = rates
+        order.save(update_fields=['exchange_rates'])

@@ -18,9 +18,9 @@ from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404, render, redirect
 from django.urls import reverse
 from django.views.decorators.http import require_POST
-from .models import Order, Line, Transaction, Shipment, ShipmentLine, Archive, Allocation, ZERO, money
+from .models import CURRENCIES, Order, Line, Transaction, Shipment, ShipmentLine, Archive, Allocation, ZERO, money
 from .forms import OrderForm, LineForm, TransactionForm, AllocationForm, ShipmentForm, SalespersonCreationForm
-from .services import visible_orders, with_order_data, authorize, summary, line_summary, shipment_quote, confirm_shipment, allocate, audit
+from .services import visible_orders, with_order_data, authorize, summary, line_summary, shipment_quote, confirm_shipment, allocate, audit, order_rates, rate_for, remember_rate
 from .exports import archive_bytes
 from .throttle import login_limited
 
@@ -52,7 +52,7 @@ def dashboard(request):
         for c, values in s['currencies'].items():
             for k, v in values.items():
                 totals[c][k] += v
-        cost += s['cost']
+        cost += s['external_cost']
         payment += s['payment']
     tx = [t for o, _ in cards for t in o.transactions.all()]
     month = defaultdict(lambda: [ZERO, ZERO])
@@ -92,25 +92,34 @@ def order_detail(request, pk):
 
 @login_required
 def order_new(request):
+    from .catalog import suggestions
+    hints = suggestions(request.user)
     form = OrderForm(request.POST or None, user=request.user)
+    form.fields['customer'].widget.attrs['list'] = 'entry-customer-options'
     if request.method == 'POST' and form.is_valid():
         with db_transaction.atomic():
             order = form.save()
             audit(order, request.user, '创建订单')
         messages.success(request, '大订单已创建，下一步录入产品小项。')
         return redirect('line_new', pk=order.pk)
-    return render(request, 'form.html', {'title': '新建大订单', 'form': form, 'intro': '先建立客户与负责人，再录入首次下单及后续补单。'})
+    return render(request, 'form.html', {'title': '新建大订单', 'form': form, 'intro': '先建立客户与负责人，再录入首次下单及后续补单。', 'entry_hints': hints})
 
 @login_required
 def line_new(request, pk):
     order = accessible(request, pk)
     if order.status != 'active':
         return redirect('order_detail', pk=pk)
+    if request.method == 'GET' or request.POST.get('bulk_lines') == '1':
+        from .entry import batch_lines
+        return batch_lines(request, order)
     next_number = order.lines.count()+1
     existing_labels = set(order.lines.values_list('label',flat=True))
     while f'{next_number:03d}' in existing_labels:
         next_number += 1
-    form = LineForm(request.POST or None, initial={'label':f'{next_number:03d}'})
+    line_data = request.POST.copy() if request.method == 'POST' else None
+    if line_data is not None and not line_data.get('quote_fx'):
+        line_data['quote_fx'] = rate_for(order, line_data.get('currency', 'USD'), 'CNY') or ''
+    form = LineForm(line_data, initial={'label':f'{next_number:03d}'})
     if request.method == 'POST' and form.is_valid():
         try:
             with db_transaction.atomic():
@@ -120,6 +129,7 @@ def line_new(request, pk):
                 line.order = order
                 line.full_clean()
                 line.save()
+                remember_rate(order, line.currency, 'CNY', line.quote_fx)
                 audit(order, request.user, '新增订单小项', f'{line.label} / {line.model} / {line.quantity} pcs')
             messages.success(request, '订单小项已保存。同型号补单仍保持独立核算。')
             if request.POST.get('action') == 'another':
@@ -138,7 +148,12 @@ def transaction_new(request, pk, kind):
         raise PermissionDenied
     if order.status != 'active':
         return redirect('order_detail', pk=pk)
-    form = TransactionForm(request.POST or None, request.FILES or None, kind=kind, initial={'currency': 'USD' if kind == 'receipt' else 'CNY', 'fx': 1})
+    target = 'USD' if kind == 'receipt' else 'CNY'
+    source = 'USD' if kind == 'receipt' else 'CNY'
+    txn_data = request.POST.copy() if request.method == 'POST' else None
+    if txn_data is not None and not txn_data.get('fx'):
+        txn_data['fx'] = rate_for(order, txn_data.get('currency', source), target) or ''
+    form = TransactionForm(txn_data, request.FILES or None, kind=kind, initial={'currency': source, 'fx': rate_for(order, source, target)})
     if request.method == 'POST' and form.is_valid():
         try:
             with db_transaction.atomic():
@@ -150,13 +165,18 @@ def transaction_new(request, pk, kind):
                     raise ValidationError('原币与等值币种相同，当日汇率须为 1。')
                 t.full_clean()
                 t.save()
+                remember_rate(locked, t.currency, t.target_currency, t.fx)
                 audit(order, request.user, '录入收款' if kind == 'receipt' else '录入付款', f'#{t.id} / {t.amount} {t.currency} / {t.reference}')
             messages.success(request, '流水已保存，请将款项分配到对应小项。')
             return redirect('allocation_new', pk=t.pk)
         except (ValidationError, IntegrityError) as exc:
             form.add_error(None, error_text(exc))
+    from .catalog import suggestions
+    hints = suggestions(request.user)
+    for field in ['party', 'platform']:
+        form.fields[field].widget.attrs['list'] = f'entry-{field}-options'
     target = 'USD' if kind == 'receipt' else 'CNY'
-    return render(request, 'form.html', {'title': '录入客户收款' if kind == 'receipt' else '录入供应商付款', 'order': order, 'form': form, 'intro': f'当日汇率记录用于 {target} 等值展示；抵扣订单金额时还需单独确认结算汇率。凭证仅支持 PDF / PNG / JPG，最大 10MB。'})
+    return render(request, 'form.html', {'title': '录入客户收款' if kind == 'receipt' else '录入供应商付款', 'order': order, 'form': form, 'intro': f'本订单已填写的同币种汇率自动复用。实际汇率有变化时可修改，仅影响新记录。凭证支持 PDF / PNG / JPG，最大 10MB。', 'entry_hints': hints, 'order_rates': {c: str(rate_for(order, c, target) or '') for c, _ in CURRENCIES}})
 
 @login_required
 def allocation_new(request, pk):
@@ -165,8 +185,23 @@ def allocation_new(request, pk):
         raise PermissionDenied
     if txn.order.status != 'active':
         return redirect('order_detail', pk=txn.order_id)
-    form = AllocationForm(request.POST or None, order=txn.order, txn=txn)
-    if request.method == 'POST' and form.is_valid():
+    from .entry import allocation_rows, bulk_allocation
+    rows = allocation_rows(txn)
+    bulk_error = ''
+    if request.method == 'POST' and request.POST.get('bulk_allocation') == '1':
+        try:
+            count = bulk_allocation(request, txn, rows)
+            messages.success(request, f'已完成 {count} 行分摊，余额与批次同步更新。')
+            return redirect('allocation_new', pk=pk)
+        except (ValidationError, IntegrityError) as exc:
+            bulk_error = error_text(exc)
+    allocation_data = request.POST.copy() if request.method == 'POST' else None
+    if allocation_data is not None and not allocation_data.get('rate'):
+        selected = txn.order.lines.filter(pk=allocation_data.get('line') or None).first() if str(allocation_data.get('line', '')).isdigit() else None
+        if selected:
+            allocation_data['rate'] = rate_for(txn.order, txn.currency, selected.currency if txn.kind == 'receipt' else 'CNY') or ''
+    form = AllocationForm(allocation_data, order=txn.order, txn=txn)
+    if request.method == 'POST' and not request.POST.get('bulk_allocation') and form.is_valid():
         d = form.cleaned_data
         try:
             allocate(request.user, txn.pk, d['line'].pk, d['amount'], d['rate'], d['reason'], d['shipment_item'] or None)
@@ -174,7 +209,12 @@ def allocation_new(request, pk):
             return redirect('allocation_new', pk=pk)
         except ValidationError as exc:
             form.add_error(None, error_text(exc))
-    return render(request, 'allocation.html', {'title': '款项分摊', 'order': txn.order, 'txn': txn, 'form': form})
+    currencies = sorted({row['currency'] for row in rows})
+    rates = [{'currency': c, 'rate': request.POST.get(f'rate_{c}', str(rate_for(txn.order, txn.currency, c) or '')), 'same': c == txn.currency} for c in currencies]
+    for row in rows:
+        row['entered'] = request.POST.get(f"amount_{row['key']}", '')
+        row['selected'] = row['key'] in request.POST.getlist('selected')
+    return render(request, 'allocation.html', {'title': '批量款项分摊', 'order': txn.order, 'txn': txn, 'form': form, 'rows': rows, 'rates': rates, 'bulk_error': bulk_error, 'token': request.POST.get('token') or uuid.uuid4(), 'reason': request.POST.get('reason', '按订单约定分摊')})
 
 @login_required
 def attachment(request, pk):
@@ -383,3 +423,9 @@ def system_status(request):
     return render(request, 'system.html', {'title': '服务器与数据', 'database_vendor': connection.vendor,
                                          'production': settings.PRODUCTION,
                                          'shared_cache': 'redis' in settings.CACHES['default']['BACKEND'].lower()})
+
+@login_required
+def line_template(request, pk):
+    accessible(request, pk)
+    from .product_import import template_bytes
+    return FileResponse(BytesIO(template_bytes()), as_attachment=True, filename='product-entry-template.xlsx', content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')

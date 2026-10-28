@@ -1,0 +1,1 @@
+<tr class="product-row">{% for field in row %}<td data-column="{{ field.name }}" class="{% if field.errors %}invalid{% endif %}">{{ field }}{% if field.errors %}<div class="cell-error">{{ field.errors }}</div>{% endif %}</td>{% endfor %}<td><button type="button" class="row-remove" aria-label="移除此行">移除</button></td></tr>

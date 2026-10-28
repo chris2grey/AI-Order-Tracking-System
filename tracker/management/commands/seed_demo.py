@@ -20,7 +20,7 @@ class Command(BaseCommand):
             return
         credentials = []
         users = []
-        for username, name, admin in [('admin', '管理员', True), ('alice', '林晓', False), ('bob', '陈宇', False)]:
+        for username, name, admin in [('admin', '管理员', True), ('chris', 'chris', False), ('coco', 'coco', False)]:
             password = secrets.token_urlsafe(12)
             u = User.objects.create_user(username=username, first_name=name, password=password, is_superuser=admin, is_staff=admin)
             credentials.append(f'{username} ({name}) : {password}')
@@ -39,7 +39,7 @@ class Command(BaseCommand):
             if idx != 4:
                 allocate(admin, t.pk, l.pk, amount, 1, '示例款项分配')
         confirm_shipment(admin, o.pk, {lines[0].pk:500, lines[1].pk:200, lines[2].pk:100}, {'date':today-timedelta(days=45), 'address':'Example Warehouse, Hamburg, Germany（虚构地址）', 'carrier_type':'customer', 'carrier':'客户指定货代（示例）', 'domestic_date':today-timedelta(days=47), 'domestic_tracking':'DEMO-DOM-0001', 'international_tracking':'DEMO-INT-0001', 'freight':2400, 'freight_currency':'CNY', 'notes':'共 8 箱；示例物流信息，不对应真实运输。'}, uuid.uuid4())
-        other = Order.objects.create(number='DEMO-2026-002', customer='Blue Harbor（示例客户）', owner=bob, date=today-timedelta(days=20), notes='用于验证业务员之间的数据隔离。alice 不能查看此订单。')
+        other = Order.objects.create(number='DEMO-2026-002', customer='Blue Harbor（示例客户）', owner=bob, date=today-timedelta(days=20), notes='用于验证业务员之间的数据隔离。其他业务员不能查看此订单。')
         Line.objects.create(order=other, label='001 · 新订单', product='工业电源', model='PWR-24', quantity=800, price=45, cost=180, supplier='示例电源工厂', quote_fx=7)
         done = Order.objects.create(number='DEMO-2026-003', customer='Greenfield Labs（示例客户）', owner=alice, date=today-timedelta(days=40), notes='已完成示例，可测试锁定归档与三表下载。')
         dl = Line.objects.create(order=done, label='001', product='样品模块', model='SAMPLE-X', quantity=100, price=10, cost=40, supplier='示例样品工厂', quote_fx=7)
