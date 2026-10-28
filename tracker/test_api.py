@@ -213,7 +213,8 @@ class ApiTests(TestCase):
         self.assertEqual(len(response.json()['sha256']), 64)
         download = self.client.get(url)
         self.assertEqual(download.status_code, 200)
-        download.close()
+        # Consume Django's streaming wrapper so request_finished is handled safely.
+        self.assertTrue(b''.join(download.streaming_content).startswith(b'PK'))
         self.client.force_login(self.bob)
         self.assertEqual(self.client.get(url).status_code, 404)
 
@@ -226,7 +227,7 @@ class ApiTests(TestCase):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 200)
             self.assertNotIn(temp, response['Content-Disposition'])
-            response.close()
+            self.assertEqual(b''.join(response.streaming_content), b'%PDF-fictional')
             self.client.force_login(self.bob)
             self.assertEqual(self.client.get(url).status_code, 404)
             self.client.force_login(self.admin)
