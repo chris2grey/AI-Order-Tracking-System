@@ -1,0 +1,76 @@
+name: Remote checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remote-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Django / ${{ matrix.database }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: tracker_ci
+          POSTGRES_USER: ci_user
+          # Disposable service credentials; no production credentials are used.
+          POSTGRES_PASSWORD: ci_test_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_user -d tracker_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7.4
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATA_DIR: ${{ runner.temp }}/order-tracker-ci
+      DJANGO_DEBUG: '0'
+      POSTGRES_DB: ${{ matrix.database == 'postgres' && 'tracker_ci' || '' }}
+      POSTGRES_USER: ci_user
+      POSTGRES_PASSWORD: ci_test_only
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: '5432'
+      REDIS_URL: ${{ matrix.database == 'postgres' && 'redis://127.0.0.1:6379/1' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements.server.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.server.txt
+      - name: Check configuration and migrations
+        run: |
+          python manage.py check
+          python manage.py makemigrations --check --dry-run
+          python -m pip check
+      - name: Run regression and concurrency tests
+        run: python manage.py test tracker --verbosity 2 --noinput
