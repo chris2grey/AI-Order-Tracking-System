@@ -1,5 +1,5 @@
 {% load static %}<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ title }} · 订单中枢</title><link rel="stylesheet" href="{% static 'app.css' %}"><script src="{% static 'app.js' %}" defer></script></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ title }} · 订单中枢</title><link rel="stylesheet" href="{% static 'app.css' %}?v=20261028-entry2"><script src="{% static 'app.js' %}?v=20261028-entry2" defer></script></head>
 <body><aside class="sidebar"><a class="brand" href="/"> <span class="brand-icon">▦</span><span>订单中枢<small>ORDER OPERATIONS</small></span></a><div class="workspace"><span class="workspace-dot"></span> 大订单业务工作台 <span class="chevron">⌄</span></div><div class="nav-label">工作空间</div><nav>
 <a href="/" class="{% if request.path == '/' %}active{% endif %}"><span>◫</span> 业务总览</a>
 <a href="/orders/" class="{% if '/orders/' in request.path %}active{% endif %}"><span>▤</span> 订单工作台</a>
