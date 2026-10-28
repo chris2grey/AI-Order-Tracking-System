@@ -64,8 +64,11 @@ try:
         assert page.locator('.product-row').count()==4
         page.locator('.product-row').last.get_by_role('button',name='移除此行').click()
         page.screenshot(path=str(output/'01-product-table.png'),full_page=True)
+        invalid = page.locator('#line-table-form').evaluate("form => [...form.querySelectorAll(':invalid')].map(e => [e.name,e.validationMessage])")
+        assert not invalid, invalid
         page.get_by_role('button',name='保存全部产品 →',exact=True).click()
-        page.wait_for_url(f'**/orders/{order.pk}/')
+        page.screenshot(path=str(output/'01b-product-save-result.png'),full_page=True)
+        assert page.url.endswith(f'/orders/{order.pk}/'), page.locator('body').inner_text()[-7000:]
         assert order.lines.count()==2
         first,second=list(order.lines.all())
         assert first.quote_fx==second.quote_fx

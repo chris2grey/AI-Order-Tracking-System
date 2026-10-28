@@ -174,6 +174,9 @@ class BatchLineForm(LineForm):
         super().__init__(*args, **kwargs)
         self.fields['label'].required = False
         self.fields['label'].widget.attrs['placeholder'] = '自动编号'
+        for name in ['product', 'model', 'supplier']:
+            self.fields[name].widget.attrs['list'] = f'entry-{name}-options'
+            self.fields[name].widget.attrs['autocomplete'] = 'off'
 
     class Meta:
         model = Line
