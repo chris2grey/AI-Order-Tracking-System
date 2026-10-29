@@ -12,10 +12,9 @@ def with_order_data(queryset):
     return queryset.select_related('owner').prefetch_related(
         Prefetch('lines', queryset=Line.objects.prefetch_related(
             Prefetch('allocations', queryset=Allocation.objects.select_related('transaction')),
-            Prefetch('shipment_items', queryset=ShipmentLine.objects.prefetch_related(
-                Prefetch('allocations', queryset=Allocation.objects.select_related('transaction')),
-                Prefetch('coverages', queryset=AllocationCoverage.objects.select_related('allocation__transaction')))))),
-        Prefetch('transactions', queryset=Transaction.objects.prefetch_related('corrections', Prefetch('allocations',queryset=Allocation.objects.select_related('line','shipment_item')))))
+            'shipment_items')),
+        Prefetch('transactions', queryset=Transaction.objects.prefetch_related('corrections',
+            Prefetch('allocations',queryset=Allocation.objects.select_related('line','shipment_item')))))
 
 def authorize(user, order, write=False, admin=False):
     if not user.is_active or (admin and not user.is_superuser) or (not user.is_superuser and order.owner_id != user.id):

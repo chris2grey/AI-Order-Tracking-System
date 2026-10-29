@@ -46,8 +46,8 @@ def workbook(sheets):
     return out.getvalue()
 
 def archive_bytes(order):
-    common_headers = ['订单号', '客户', '业务员', '小项', '下单日期', '产品', '型号', '数量', '销售单价', '币种', '报价汇率 CNY/销售币', '销售总额', '单位成本 CNY', '采购总额 CNY', '供应商', '单价含运费', '客户运费', '客户条款', '供应商条款', '供货方式', '对外货款 CNY']
-    common = [[order.number, order.customer, order.owner.get_full_name() or order.owner.username, l.number, l.date.isoformat(), l.product, l.model, l.quantity, l.price, l.currency, l.quote_fx, l.sale_total, l.cost, l.cost_total, l.supplier, str(l.freight_included), l.freight, l.customer_terms, l.supplier_terms, l.get_supply_type_display(), l.payable_total] for l in order.lines.all()]
+    common_headers = ['订单号', '客户', '业务员', '小项', '下单日期', '产品', '型号', '数量', '销售单价', '币种', '报价汇率 CNY/销售币', '销售总额', '单位成本 CNY', '采购总额 CNY', '供应商', '单价含运费', '客户运费', '客户条款', '供应商条款', '供货方式', '对外货款 CNY', '原小项编号（历史原文）']
+    common = [[order.number, order.customer, order.owner.get_full_name() or order.owner.username, l.number, l.date.isoformat(), l.product, l.model, l.quantity, l.price, l.currency, l.quote_fx, l.sale_total, l.cost, l.cost_total, l.supplier, str(l.freight_included), l.freight, l.customer_terms, l.supplier_terms, l.get_supply_type_display(), l.payable_total, l.label] for l in order.lines.all()]
     files = {}
     for kind, filename in [('receipt', '客户收款表.xlsx'), ('payment', '供应商付款表.xlsx')]:
         transactions, allocations = [], []
@@ -61,7 +61,7 @@ def archive_bytes(order):
                 except OSError:
                     raise ValidationError(f'流水 #{t.id} 的凭证文件暂不可用，已停止导出，请核对文件备份后重试。')
             for a in t.allocations.select_related('line', 'shipment_item'):
-                allocations.append([t.id, a.line.number, a.line.model, a.source_amount, t.currency, a.settlement_rate, a.target_amount, a.line.currency if kind == 'receipt' else 'CNY', a.shipment_item.shipment_id if a.shipment_item else '未发货资金池', a.reason, a.created_by.username, '；'.join(f'批次 #{c.shipment_item.shipment_id}: {c.amount}' for c in a.coverages.select_related('shipment_item'))])
+                allocations.append([t.id, a.line.number, a.line.model, a.source_amount, t.currency, a.settlement_rate, a.target_amount, a.line.currency if kind == 'receipt' else 'CNY', a.shipment_item.shipment_id if a.shipment_item else '按产品分摊 / 后续发货预付款', a.reason, a.created_by.username, '；'.join(f'批次 #{c.shipment_item.shipment_id}: {c.amount}' for c in a.coverages.select_related('shipment_item'))])
         files[filename] = workbook([('流水', ['流水ID', '订单号', '日期', '原币金额', '币种', '付款公司/供应商', '平台', '折算汇率', '汇率来源', '等值金额', '等值币种', '用途', '平台流水号', '未分配原币金额', '凭证文件', '录入人', '最初录入公司', '有效原币金额', '流水状态'], transactions), ('款项分摊', ['流水ID', '小项', '型号', '分摊原币', '原币种', '结算汇率', '抵扣金额', '抵扣币种', '发货批次', '说明', '操作人', '自动结算批次（目标币金额）'], allocations), ('订单小项快照', common_headers, common)])
     shipments = []
     for s in order.shipments.all():

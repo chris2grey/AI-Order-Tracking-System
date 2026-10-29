@@ -241,7 +241,7 @@ def finance(request):
     qs = Transaction.objects.filter(order__in=visible_orders(request.user)).prefetch_related('corrections').select_related('order', 'created_by').prefetch_related(Prefetch('allocations',queryset=Allocation.objects.select_related('line','shipment_item')))
     q = request.GET.get('q', '').strip()
     if q:
-        qs = qs.filter(Q(order__number__icontains=q) | Q(order__customer__icontains=q) | Q(party__icontains=q) | Q(platform__icontains=q) | Q(purpose__icontains=q) | Q(reference__icontains=q) | Q(allocations__line__model__icontains=q) | Q(allocations__line__product__icontains=q) | Q(allocations__line__label__icontains=q)).distinct()
+        qs = qs.filter(Q(order__number__icontains=q) | Q(order__customer__icontains=q) | Q(party__icontains=q) | Q(corrections__party__icontains=q) | Q(platform__icontains=q) | Q(purpose__icontains=q) | Q(reference__icontains=q) | Q(allocations__line__model__icontains=q) | Q(allocations__line__product__icontains=q) | Q(allocations__line__label__icontains=q)).distinct()
     for field in ['kind', 'currency']:
         if request.GET.get(field):
             qs = qs.filter(**{field: request.GET[field]})
