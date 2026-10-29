@@ -93,7 +93,7 @@ function remember(state,source,target,value){
   state.rates[source+':'+target]=fixed(rate,8);return rate;
 }
 export function newOrder(data,user){
-  return {id:data.id||uuid(),number:text(data.number,'订单编号',60),customer:name(data.customer),owner:data.owner||user.id,date:day(data.date),notes:text(data.notes,'备注',2000,false),
+  return {id:uuid(),number:text(data.number,'订单编号',60),customer:name(data.customer),owner:data.owner||user.id,date:day(data.date),notes:text(data.notes,'备注',2000,false),
     status:'active',created:now(),lines:[],transactions:[],allocations:[],shipments:[],archives:[],audit:[],rates:{}};
 }
 function lineOf(state,id){const line=state.lines.find(l=>l.id===id);if(!line)throw new DomainError('产品不属于此订单。');return line;}

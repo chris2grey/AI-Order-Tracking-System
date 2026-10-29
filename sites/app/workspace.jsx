@@ -62,7 +62,7 @@ export default function Workspace(){
     return ()=>{window.removeEventListener('hashchange',hash);window.removeEventListener('session-expired',expired);window.removeEventListener('beforeunload',before);document.removeEventListener('input',changed);document.removeEventListener('wheel',wheel,true);};
   },[]);
   useEffect(()=>{if(user)refresh().catch(e=>setError(e.message));},[user?.id]);
-  useEffect(()=>{let live=true;if(user&&orderId){setOrder(null);api('/orders/'+orderId).then(data=>{if(live)setOrder(data.order);}).catch(e=>{if(live)setError(e.message);});}return()=>{live=false;};},[orderId,user?.id]);
+  useEffect(()=>{let live=true;if(user&&orderId){setOrder(null);api('/orders/'+orderId).then(data=>{if(live)setOrder(data.order);}).catch(e=>{if(live)setError(e.message);});}return()=>{live=false;};},[route.join('/'),user?.id]);
   const props={user,users,hints,order,go,run,busy,saved,setNotice};
   if(!ready)return <div className="loading">正在连接工作台…</div>;
   if(!user)return <Login onLogin={setUser} run={run} busy={busy} error={error}/>;

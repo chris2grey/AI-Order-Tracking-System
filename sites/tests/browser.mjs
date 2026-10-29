@@ -111,6 +111,9 @@ try{
   await page.screenshot({path:output+'/07-mobile-order.png',fullPage:true});
   if(errors.length)throw Error('Browser errors: '+errors.join('; '));
   console.log('Sites browser passed: persisted table entry, wheel guard, optional purpose, product allocations before/after shipment, late freight, Hong Kong tracking, name correction, real XLSX import and mobile layout.');
+}catch(error){
+  if(browser){try{for(const context of browser.contexts())for(const page of context.pages()){await page.screenshot({path:output+'/failure.png',fullPage:true});writeFileSync(output+'/failure.txt',(await page.locator('body').innerText()).slice(0,15000));}}catch{}}
+  throw error;
 }finally{
   if(browser)await browser.close();
   server.kill('SIGTERM');await new Promise(r=>setTimeout(r,1000));

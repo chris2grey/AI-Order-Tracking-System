@@ -83,3 +83,18 @@ test('session signing key is never exposed to the browser',async()=>{
     assert(!result.includes(t.env.SESSION_KEY));assert(!result.includes('password'));assert(!result.includes('salt'));
   }finally{t.env.DB.close();}
 });
+
+test('private voucher namespace rejects foreign downloads and does not trust JSON file references',async()=>{
+  const t=await setup();try{
+    const id=await t.create(),cookie=t.admin.cookie;
+    const data={kind:'receipt',amount:'1',currency:'USD',party:'Fictional',platform:'Bank',fx:'1',reference:'FILE-'+uuid()};
+    const form=new FormData();form.append('payload',JSON.stringify(data));form.append('voucher',new Blob(['%PDF-fictional-private-voucher'],{type:'application/pdf'}),'fictional.pdf');
+    const response=await handle(new Request(base+'/api/orders/'+id+'/transaction',{method:'POST',headers:{Origin:base,Cookie:cookie,'Idempotency-Key':uuid()},body:form}),t.env);
+    assert.equal(response.status,200);const txn=(await response.json()).transactionId;
+    const voucher=await t.request('/orders/'+id+'/voucher/'+txn,{cookie});assert.equal(voucher.status,200);assert((await voucher.text()).startsWith('%PDF-'));
+    assert.equal((await t.request('/orders/'+id+'/voucher/'+txn,{cookie:t.coco.cookie})).status,404);
+    const result=await t.request('/orders/'+id+'/transaction',{cookie,data:{...data,reference:uuid(),attachment:{key:'foreign/private.pdf',name:'forged.pdf'}}});assert.equal(result.status,200);
+    const state=(await (await t.request('/orders/'+id,{cookie})).json()).order;assert.equal(state.transactions.at(-1).attachment,null);
+    const exported=await t.request('/orders/'+id+'/export',{cookie});assert.equal(exported.status,200);assert.equal((await exported.arrayBuffer()).byteLength>100,true);
+  }finally{t.env.DB.close();}
+});

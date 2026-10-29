@@ -120,6 +120,7 @@ export async function handle(request,env){
       return new Response(bytes,{headers:{'Content-Type':'application/zip','Content-Disposition':'attachment; filename="order-snapshot.zip"','Cache-Control':'private, no-store'}});
     }
     if(request.method!=='POST')throw new DomainError('请求方法无效。',405);
+    if(['transaction','allocation','correction','freight','lock'].includes(action))requireUser(user,true);
     const data=action==='transaction'?await transactionInput(env,request,id,user):await input(request);
     const identity=await requestKey(user,request,data);
     let prepare;
