@@ -140,9 +140,11 @@ class ApiTests(TestCase):
         data = {'label': '002', 'product': 'Widget', 'model': 'A', 'date': '2026-10-28', 'quantity': 5,
                 'price': '11.1250', 'currency': 'USD', 'quote_fx': '7', 'cost': '2.1234', 'supplier': 'Factory',
                 'freight_included': True, 'freight': '1.00', 'customer_terms': 'test', 'supplier_terms': 'test'}
-        self.assertEqual(self.post(f'orders/{self.order.pk}/lines/', data).status_code, 201)
+        key=str(uuid.uuid4())
+        self.assertEqual(self.post(f'orders/{self.order.pk}/lines/', data,key).status_code, 201)
         self.assertEqual(self.order.lines.count(), 2)
-        self.assertEqual(self.post(f'orders/{self.order.pk}/lines/', data).status_code, 400)
+        self.assertEqual(self.post(f'orders/{self.order.pk}/lines/', data,key).status_code, 201)
+        self.assertEqual(self.order.lines.count(), 2)
         self.order.status = 'locked'
         self.order.save()
         data['label'] = '003'
@@ -190,10 +192,10 @@ class ApiTests(TestCase):
         self.assertEqual(first.json()['items'][0]['receipt_reserved'], '3.33')
         self.assertEqual(self.post(f'orders/{self.order.pk}/shipments/', data, key).json(), first.json())
         self.assertEqual(Shipment.objects.count(), 1)
-        # New funds must name the already shipped, outstanding batch.
+        # Product allocation automatically covers the shipped batch first.
         tail = self.receipt('6.67').json()['id']
-        self.assertEqual(self.allocation(tail, '6.67').status_code, 400)
-        self.assertEqual(self.allocation(tail, '6.67', shipment_item=first.json()['items'][0]['id']).status_code, 201)
+        self.assertEqual(self.allocation(tail, '6.67').status_code, 201)
+        self.assertEqual(self.allocation(tail, '6.67', shipment_item=first.json()['items'][0]['id']).status_code, 400)
         second = self.post(f'orders/{self.order.pk}/shipments/', self.shipping(2))
         self.assertEqual(second.json()['items'][0]['receipt_reserved'], '6.67')
         self.assertEqual(second.json()['items'][0]['receivable'], '13.33')

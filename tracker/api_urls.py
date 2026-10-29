@@ -2,6 +2,9 @@ from django.urls import path
 from . import api
 
 urlpatterns = [
+    path('transactions/<int:pk>/corrections/', api.transaction_correction),
+    path('shipments/<int:pk>/logistics/', api.shipment_logistics),
+    path('shipments/<int:pk>/freight/', api.shipment_freight),
     path('auth/session/', api.session),
     path('auth/login/', api.sign_in),
     path('auth/logout/', api.sign_out),

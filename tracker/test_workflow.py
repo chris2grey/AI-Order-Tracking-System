@@ -47,12 +47,11 @@ class WorkflowTests(TestCase):
         self.assertContains(response,'尚未保存')
         self.assertFalse(self.order.lines.exists())
 
-    def test_duplicate_labels_do_not_partially_save(self):
+    def test_manual_labels_are_ignored_and_numbers_are_system_assigned(self):
         response=self.client.post(f'/orders/{self.order.pk}/lines/new/',self.batch_data(**{'lines-0-label':'DUP','lines-1-label':'DUP'}))
-        self.assertContains(response,'重复')
-        self.assertFalse(self.order.lines.exists())
-        self.order.refresh_from_db()
-        self.assertEqual(self.order.exchange_rates,{})
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(list(self.order.lines.values_list('label', flat=True)), ['001','002'])
+        self.assertEqual([line.number for line in self.order.lines.all()], ['001','002'])
 
     def test_self_supply_in_table_preserves_internal_cost(self):
         response=self.client.post(f'/orders/{self.order.pk}/lines/new/',self.batch_data(**{'lines-1-supply_type':'self','lines-1-supplier':''}))
@@ -224,7 +223,7 @@ class WorkflowTests(TestCase):
     def test_import_only_populates_draft_until_save(self):
         data=self.batch_data()
         # No existing rows: only the uploaded spreadsheet is previewed.
-        data.update({'lines-TOTAL_FORMS':'0','action':'import','product_file':self.xlsx([['','假数据导入','IMP',10,5,'USD','自供货','',2,0]])})
+        data.update({'lines-TOTAL_FORMS':'0','action':'import','product_file':self.xlsx([['假数据导入','IMP',10,5,'USD','自供货','',2,0]])})
         response=self.client.post(f'/orders/{self.order.pk}/lines/new/',data)
         self.assertContains(response,'尚未写入订单')
         self.assertContains(response,'假数据导入')
@@ -234,15 +233,15 @@ class WorkflowTests(TestCase):
     def test_import_formula_wrong_headers_and_more_than_100_rows_rejected(self):
         from .product_import import import_rows
         with self.assertRaisesMessage(ValidationError,'公式'):
-            import_rows(self.xlsx([['','=1+1','IMP',1,5,'USD','自供货','',2,0]]))
+            import_rows(self.xlsx([['=1+1','IMP',1,5,'USD','自供货','',2,0]]))
         with self.assertRaisesMessage(ValidationError,'列标题'):
             import_rows(self.xlsx([],header=['错误标题']))
         with self.assertRaisesMessage(ValidationError,'100行'):
-            import_rows(self.xlsx([['','假数据','IMP',1,5,'USD','自供货','',2,0]]*101))
+            import_rows(self.xlsx([['假数据','IMP',1,5,'USD','自供货','',2,0]]*101))
 
     def test_import_keeps_existing_draft_and_does_not_write(self):
         data=self.batch_data()
-        data.update({'action':'import','product_file':self.xlsx([['','假数据新增','IMP',1,5,'CNY','外部供应商','假数据',2,0]])})
+        data.update({'action':'import','product_file':self.xlsx([['假数据新增','IMP',1,5,'CNY','外部供应商','假数据',2,0]])})
         response=self.client.post(f'/orders/{self.order.pk}/lines/new/',data)
         self.assertEqual(response.context['formset'].total_form_count(),3)
         self.assertFalse(self.order.lines.exists())

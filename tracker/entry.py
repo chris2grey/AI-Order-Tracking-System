@@ -32,7 +32,7 @@ def batch_lines(request, order):
                 total = 0
             for i in range(max(0, total)):
                 row = {key: request.POST.get(f'lines-{i}-{key}', '') for key, _ in COLUMNS}
-                if any(row[key] for key in ['label', 'product', 'model', 'quantity', 'price', 'cost']):
+                if any(row[key] for key in ['product', 'model', 'quantity', 'price', 'cost']):
                     existing.append(row)
             incoming = existing + incoming
             if len(incoming) > 100:
@@ -77,16 +77,9 @@ def batch_lines(request, order):
                             raise ValidationError('此提交编号已用于其他内容，请刷新后重新核对。')
                         messages.info(request, '本批产品已经保存，未重复新增。')
                         return redirect('line_new' if request.POST.get('action') == 'another' else 'order_detail', pk=order.pk)
-                    labels = set(locked.lines.values_list('label', flat=True))
-                    number = locked.lines.count() + 1
                     for form in rows:
                         line = form.save(commit=False)
-                        while f'{number:03d}' in labels:
-                            number += 1
-                        line.label = line.label.strip() or f'{number:03d}'
-                        if line.label in labels:
-                            raise ValidationError(f'小项编号 {line.label} 重复，请修改后再提交。')
-                        labels.add(line.label)
+                        line.assign_number(locked)
                         line.order = locked
                         line.date = defaults.cleaned_data['date']
                         line.customer_terms = defaults.cleaned_data['customer_terms']
@@ -111,22 +104,26 @@ def batch_lines(request, order):
         next_number += 1
     return render(request, 'line_table.html', {'title': '表格录入产品 / 补单', 'order': order, 'defaults': defaults, 'formset': formset, 'form': LineForm(initial={'label': f'{next_number:03d}'}), 'line_token': request.POST.get('line_token') or uuid.uuid4(), 'import_error': import_error, 'import_preview': import_preview, 'entry_hints': hints, 'rate_fields': [defaults[f'rate_{c}'] for c in ['USD', 'EUR', 'HKD', 'GBP']]})
 
-def allocation_rows(txn):
+def allocation_rows(txn, detail=False):
     rows = []
     for line in txn.order.lines.all():
         s = line_summary(line)
         total_due = s['receivable'] if txn.kind == 'receipt' else s['payable']
-        if total_due <= 0 or (txn.kind == 'payment' and (line.supply_type == 'self' or line.supplier.strip() != txn.party.strip())):
+        if total_due <= 0 or (txn.kind == 'payment' and (line.supply_type == 'self' or line.supplier.strip() != txn.effective_party.strip())):
             continue
         currency = line.currency if txn.kind == 'receipt' else 'CNY'
+        if not detail:
+            rows.append({'key': f'{line.pk}_auto', 'line': line, 'item': None, 'due': total_due,
+                         'currency': currency, 'purpose': '按产品分摊', 'shipped': s['shipped'], 'remaining': s['remaining']})
+            continue
         debt = ZERO
         for item in line.shipment_items.select_related('shipment').order_by('shipment__date', 'shipment_id', 'pk'):
             due = item.due(txn.kind)
             if due > 0:
                 debt += due
-                rows.append({'key': f'{line.pk}_{item.pk}', 'line': line, 'item': item, 'due': due, 'currency': currency, 'purpose': f'发货批次 #{item.shipment_id}'})
+                rows.append({'key': f'{line.pk}_{item.pk}', 'line': line, 'item': item, 'due': due, 'currency': currency, 'purpose': f'发货批次 #{item.shipment_id}', 'shipped': s['shipped'], 'remaining': s['remaining']})
         if s['remaining'] > 0 and total_due > debt:
-            rows.append({'key': f'{line.pk}_pool', 'line': line, 'item': None, 'due': total_due-debt, 'currency': currency, 'purpose': '未发货资金池'})
+            rows.append({'key': f'{line.pk}_pool', 'line': line, 'item': None, 'due': total_due-debt, 'currency': currency, 'purpose': '未发货资金池', 'shipped': s['shipped'], 'remaining': s['remaining']})
     return rows
 
 def bulk_allocation(request, txn, rows):
@@ -170,7 +167,7 @@ def bulk_allocation(request, txn, rows):
                     raise ValueError
             except (ValueError, ArithmeticError):
                 raise ValidationError('所选行请填写有效金额和最多 8 位小数的汇率。')
-            allocate(request.user, txn.pk, row['line'].pk, amount, rate, body['reason'], row['item'].pk if row['item'] else None)
+            allocate(request.user, txn.pk, row['line'].pk, amount, rate, body['reason'], row['item'].pk if row['item'] else None, auto_batches=row['key'].endswith('_auto'))
             count += 1
         ApiMutation.objects.create(user=request.user, key=token, operation=operation, digest=digest, response={'count': count}, status_code=200)
     return count

@@ -78,9 +78,9 @@ def orders(request):
 
 @login_required
 def order_detail(request, pk):
-    shipment_items = ShipmentLine.objects.select_related('line').prefetch_related(Prefetch('allocations',queryset=Allocation.objects.select_related('transaction')))
+    shipment_items = ShipmentLine.objects.select_related('line').prefetch_related(Prefetch('allocations',queryset=Allocation.objects.select_related('transaction')), 'coverages__allocation__transaction')
     queryset = with_order_data(visible_orders(request.user)).prefetch_related(
-        Prefetch('shipments',queryset=Shipment.objects.prefetch_related(Prefetch('items',queryset=shipment_items))),
+        Prefetch('shipments',queryset=Shipment.objects.prefetch_related('freight_records', Prefetch('items',queryset=shipment_items))),
         Prefetch('archives',queryset=Archive.objects.defer('content')))
     order = get_object_or_404(queryset, pk=pk)
     s = summary(order)
@@ -127,6 +127,7 @@ def line_new(request, pk):
                 authorize(request.user, order, write=True)
                 line = form.save(commit=False)
                 line.order = order
+                line.assign_number(order)
                 line.full_clean()
                 line.save()
                 remember_rate(order, line.currency, 'CNY', line.quote_fx)
@@ -186,7 +187,13 @@ def allocation_new(request, pk):
     if txn.order.status != 'active':
         return redirect('order_detail', pk=txn.order_id)
     from .entry import allocation_rows, bulk_allocation
-    rows = allocation_rows(txn)
+    detail = request.GET.get('detail') == '1'
+    rows = allocation_rows(txn, detail=detail)
+    # Existing bookmarked clients may still submit explicit batch/pool rows.
+    if request.method == 'POST' and request.POST.get('bulk_allocation') == '1':
+        selected_keys = request.POST.getlist('selected')
+        if selected_keys and all(not key.endswith('_auto') for key in selected_keys):
+            rows = allocation_rows(txn, detail=True)
     bulk_error = ''
     if request.method == 'POST' and request.POST.get('bulk_allocation') == '1':
         try:
@@ -214,7 +221,7 @@ def allocation_new(request, pk):
     for row in rows:
         row['entered'] = request.POST.get(f"amount_{row['key']}", '')
         row['selected'] = row['key'] in request.POST.getlist('selected')
-    return render(request, 'allocation.html', {'title': '批量款项分摊', 'order': txn.order, 'txn': txn, 'form': form, 'rows': rows, 'rates': rates, 'bulk_error': bulk_error, 'token': request.POST.get('token') or uuid.uuid4(), 'reason': request.POST.get('reason', '按订单约定分摊')})
+    return render(request, 'allocation.html', {'title': '批量款项分摊', 'order': txn.order, 'txn': txn, 'form': form, 'rows': rows, 'rates': rates, 'bulk_error': bulk_error, 'token': request.POST.get('token') or uuid.uuid4(), 'detail': detail, 'reason': request.POST.get('reason', '按订单约定分摊')})
 
 @login_required
 def attachment(request, pk):
@@ -231,7 +238,7 @@ def attachment(request, pk):
 
 @login_required
 def finance(request):
-    qs = Transaction.objects.filter(order__in=visible_orders(request.user)).select_related('order', 'created_by').prefetch_related(Prefetch('allocations',queryset=Allocation.objects.select_related('line','shipment_item')))
+    qs = Transaction.objects.filter(order__in=visible_orders(request.user)).prefetch_related('corrections').select_related('order', 'created_by').prefetch_related(Prefetch('allocations',queryset=Allocation.objects.select_related('line','shipment_item')))
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(Q(order__number__icontains=q) | Q(order__customer__icontains=q) | Q(party__icontains=q) | Q(platform__icontains=q) | Q(purpose__icontains=q) | Q(reference__icontains=q) | Q(allocations__line__model__icontains=q) | Q(allocations__line__product__icontains=q) | Q(allocations__line__label__icontains=q)).distinct()
@@ -252,13 +259,13 @@ def finance(request):
         qs = qs.none()
     if request.GET.get('allocation') == 'pending':
         used = Allocation.objects.filter(transaction_id=OuterRef('pk')).values('transaction_id').annotate(total=Sum('source_amount')).values('total')[:1]
-        qs = qs.annotate(used_amount=Coalesce(Subquery(used),Value(0),output_field=DecimalField(max_digits=18,decimal_places=2))).filter(amount__gt=F('used_amount'))
+        qs = qs.annotate(used_amount=Coalesce(Subquery(used),Value(0),output_field=DecimalField(max_digits=18,decimal_places=2))).filter(amount__gt=F('used_amount')).exclude(corrections__action='void')
     page, context = paginate(request, qs)
     return render(request, 'finance.html', {'title': '财务流水', 'transactions': page.object_list, 'q': q, **context})
 
 @login_required
 def shipments(request):
-    qs = Shipment.objects.filter(order__in=visible_orders(request.user)).select_related('order').prefetch_related('items__line')
+    qs = Shipment.objects.filter(order__in=visible_orders(request.user)).select_related('order').prefetch_related('items__line', 'freight_records')
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(Q(order__number__icontains=q) | Q(order__customer__icontains=q) | Q(address__icontains=q) | Q(international_tracking__icontains=q) | Q(domestic_tracking__icontains=q) | Q(carrier__icontains=q) | Q(items__line__model__icontains=q) | Q(items__line__product__icontains=q) | Q(items__line__label__icontains=q)).distinct()
@@ -429,3 +436,72 @@ def line_template(request, pk):
     accessible(request, pk)
     from .product_import import template_bytes
     return FileResponse(BytesIO(template_bytes()), as_attachment=True, filename='product-entry-template.xlsx', content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@login_required
+def transaction_correct(request, pk):
+    from .forms import TransactionCorrectionForm
+    from .services import correct_transaction
+    from .catalog import suggestions
+    txn = get_object_or_404(Transaction, pk=pk, order__in=visible_orders(request.user))
+    if not request.user.is_superuser:
+        raise PermissionDenied
+    form = TransactionCorrectionForm(request.POST or None, initial={'party': txn.effective_party, 'token': uuid.uuid4()})
+    if request.method == 'POST' and form.is_valid():
+        d = form.cleaned_data
+        try:
+            web_revision(request, txn.order_id, d['token'], f'transaction-correction:{txn.pk}',
+                         lambda: correct_transaction(request.user, txn.pk, d['action'], d['party'], d['reason']))
+            messages.success(request, '已保留原记录并登记更正 / 冲销。')
+            return redirect('allocation_new' if d['action'] == 'party' else 'order_detail', pk=txn.pk if d['action'] == 'party' else txn.order_id)
+        except (ValidationError, IntegrityError) as exc:
+            form.add_error(None, error_text(exc))
+    return render(request, 'form.html', {'title': '更正公司名称 / 冲销误录', 'order': txn.order, 'form': form,
+        'intro': f'流水 #{txn.pk}，当前名称：{txn.effective_party}。只处理完全未分摊的误录。冲销登记等额反向记录，原流水及凭证保留；实际退款不使用此操作。',
+        'entry_hints': suggestions(request.user)})
+
+
+def web_revision(request, order_id, token, operation, action):
+    import json
+    from .models import ApiMutation
+    body = {k: request.POST.getlist(k) for k in request.POST if k != 'csrfmiddlewaretoken'}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    with db_transaction.atomic():
+        order = Order.objects.select_for_update().get(pk=order_id)
+        authorize(request.user, order, write=True, admin=True)
+        previous = ApiMutation.objects.filter(user=request.user, key=token).first()
+        if previous:
+            if previous.operation != operation or previous.digest != digest:
+                raise ValidationError('此提交编号已用于其他内容，请刷新后重试。')
+            return
+        action()
+        ApiMutation.objects.create(user=request.user, key=token, operation=operation, digest=digest, response={}, status_code=200)
+
+
+@login_required
+def shipment_edit(request, pk):
+    from .forms import LogisticsForm, FreightForm
+    from .services import update_logistics, record_freight
+    ship = get_object_or_404(Shipment.objects.select_related('order'), pk=pk, order__in=visible_orders(request.user))
+    authorize(request.user, ship.order)
+    logistics = LogisticsForm(request.POST if request.POST.get('action') == 'logistics' else None, instance=ship)
+    freight = FreightForm(request.POST if request.POST.get('action') == 'freight' else None,
+                          initial={'amount': ship.current_freight, 'currency': ship.current_freight_currency, 'token': uuid.uuid4()})
+    if request.method == 'POST':
+        try:
+            if request.POST.get('action') == 'logistics' and logistics.is_valid():
+                data = dict(logistics.cleaned_data)
+                reason = data.pop('reason')
+                update_logistics(request.user, ship.pk, data, reason)
+                messages.success(request, '物流信息已更新，原信息与换单原因已保留。')
+                return redirect('shipment_edit', pk=pk)
+            if request.POST.get('action') == 'freight' and freight.is_valid():
+                d = freight.cleaned_data
+                web_revision(request, ship.order_id, d['token'], f'shipment-freight:{ship.pk}',
+                             lambda: record_freight(request.user, ship.pk, d['amount'], d['currency'], d['reason']))
+                messages.success(request, '运费已登记，原账单记录及发货结算快照均保留。')
+                return redirect('shipment_edit', pk=pk)
+        except (ValidationError, IntegrityError) as exc:
+            (freight if request.POST.get('action') == 'freight' else logistics).add_error(None, error_text(exc))
+    return render(request, 'shipment_edit.html', {'title': '补录运费 / 修改物流', 'ship': ship, 'order': ship.order,
+                                                 'logistics': logistics, 'freight_form': freight})

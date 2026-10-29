@@ -21,9 +21,9 @@ from tracker.product_import import template_bytes
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
 
-db_pool = ThreadPoolExecutor(max_workers=1)
+db_auto = ThreadPoolExecutor(max_workers=1)
 def db(fn):
-    return db_pool.submit(fn).result()
+    return db_auto.submit(fn).result()
 
 output = Path('browser-artifacts')
 output.mkdir(exist_ok=True)
@@ -61,6 +61,10 @@ try:
             page.locator(f'#id_lines-{index}-quantity').fill('100')
             page.locator(f'#id_lines-{index}-price').fill('10')
             page.locator(f'#id_lines-{index}-cost').fill('4')
+        assert page.locator('[name$="-label"]').count()==0, 'System serial must not be editable'
+        quantity=page.locator('#id_lines-0-quantity')
+        quantity.focus(); quantity.hover(); page.mouse.wheel(0,-500)
+        assert quantity.input_value()=='100', 'Wheel changed a quantity'
         page.locator('#id_rate_USD').fill('7.1')
         page.locator('#id_lines-0-supplier').fill('虚构工厂')
         page.locator('#id_lines-2-supplier').fill('虚构工厂')
@@ -85,13 +89,19 @@ try:
         page.goto(f'{base}/orders/{order.pk}/transactions/receipt/new/')
         page.locator('#id_currency').select_option('CNY')
         assert page.locator('#id_fx').input_value() not in ['', '1']
+        # A supplier saved once is offered with an explicit searchable dropdown.
+        party=page.locator('#id_party')
+        party.locator('..').get_by_role('button',name='展开已保存的名称选项').click()
+        page.get_by_role('option',name='虚构工厂',exact=True).click()
+        assert party.input_value()=='虚构工厂'
+        assert not page.locator('#id_purpose').get_attribute('required')
         txn=db(lambda: Transaction.objects.create(order=order,kind='receipt',amount=1500,currency='USD',party='虚构客户',platform='测试平台',fx=1,purpose='虚构界面验收',reference=uuid.uuid4().hex,created_by=admin))
         page.goto(f'{base}/transactions/{txn.pk}/allocate/')
         page.locator('#allocation-select-all').check()
         page.get_by_role('button',name='填满所选余额',exact=True).click()
-        assert page.locator(f'[name="amount_{first.pk}_pool"]').input_value()=='1000.00'
-        assert page.locator(f'[name="amount_{second.pk}_pool"]').input_value()=='500.00'
-        assert not page.locator(f'[name="selected"][value="{third.pk}_pool"]').is_checked()
+        assert page.locator(f'[name="amount_{first.pk}_auto"]').input_value()=='1000.00'
+        assert page.locator(f'[name="amount_{second.pk}_auto"]').input_value()=='500.00'
+        assert not page.locator(f'[name="selected"][value="{third.pk}_auto"]').is_checked()
         page.screenshot(path=str(output/'02-bulk-allocation.png'),full_page=True)
         page.get_by_role('button',name='确认所选分摊 →',exact=True).click()
         page.get_by_role('heading',name='这笔流水已全部分摊').wait_for()
@@ -115,6 +125,42 @@ try:
         assert item.cost_amount==0 and item.internal_cost_amount==400
         page.screenshot(path=str(output/'04-order-overview.png'),full_page=True)
 
+        # Freight may be missing at dispatch; later bills and Hong Kong waybill replacement work.
+        ship=db(lambda: order.shipments.get())
+        assert ship.freight is None
+        page.get_by_role('link',name='补录运费 / 修改物流 →').first.click()
+        page.locator('#id_amount').fill('128.50')
+        page.locator('#id_reason').first.fill('虚构后补运费账单')
+        page.get_by_role('button',name='保存运费',exact=True).click()
+        assert db(lambda: order.shipments.get().current_freight)==128.5
+        page.locator('#id_international_tracking').fill('FAKE-HK-REPLACED')
+        page.locator('form').filter(has=page.locator('[name="action"][value="logistics"]')).locator('[name="reason"]').fill('虚构香港换单')
+        page.get_by_role('button',name='保存物流信息',exact=True).click()
+        assert db(lambda: order.shipments.get().international_tracking)=='FAKE-HK-REPLACED'
+        page.screenshot(path=str(output/'04b-shipment-followup.png'),full_page=True)
+
+        # After dispatch the default allocation remains one row per product, with quantities.
+        later=db(lambda: Transaction.objects.create(order=order,kind='receipt',amount=1500,currency='USD',party='虚构客户',platform='测试平台',fx=1,reference=uuid.uuid4().hex,created_by=admin))
+        page.goto(f'{base}/transactions/{later.pk}/allocate/')
+        assert page.locator('[data-allocation-row]').count()==2
+        assert page.get_by_role('columnheader',name='总数量',exact=True).count()==1
+        page.locator('#allocation-select-all').check()
+        page.get_by_role('button',name='填满所选余额',exact=True).click()
+        page.screenshot(path=str(output/'04c-product-allocation-after-shipping.png'),full_page=True)
+        page.get_by_role('button',name='确认所选分摊 →',exact=True).click()
+        page.get_by_role('heading',name='这笔流水已全部分摊').wait_for()
+
+        # Correcting a wrong supplier unblocks its previously unmatched payment.
+        wrong=db(lambda: Transaction.objects.create(order=order,kind='payment',amount=400,currency='CNY',party='虚构错名',platform='测试平台',fx=1,reference=uuid.uuid4().hex,created_by=admin))
+        page.goto(f'{base}/transactions/{wrong.pk}/allocate/')
+        assert page.locator('[data-allocation-row]').count()==0
+        page.get_by_role('link',name='更正公司名称 / 冲销误录 →').click()
+        page.locator('#id_party').fill('虚构工厂')
+        page.locator('#id_reason').fill('虚构纠正供应商名称')
+        page.get_by_role('button',name='保存更正 →',exact=True).click()
+        page.wait_for_url(f'**/transactions/{wrong.pk}/allocate/')
+        assert page.locator('[data-allocation-row]').count()==2
+
         # Template upload populates a draft and never silently commits products.
         page.goto(f'{base}/orders/{order.pk}/lines/new/')
         with page.expect_download() as info:
@@ -122,7 +168,7 @@ try:
         template=output/'product-template.xlsx'
         info.value.save_as(str(template))
         book=load_workbook(template)
-        book['产品录入'].append(['','虚构导入产品','IMPORT',5,8,'USD','自供货','',2,0])
+        book['产品录入'].append(['虚构导入产品','IMPORT',5,8,'USD','自供货','',2,0])
         book.save(template)
         page.locator('[name="product_file"]').set_input_files(str(template))
         page.get_by_role('button',name='导入并预览',exact=True).click()
@@ -138,6 +184,6 @@ try:
         browser.close()
     print('Browser workflow passed: table entry, remembered FX, bulk allocation, shipment preview/confirm, template import, mobile layout.')
 finally:
-    db_pool.shutdown(wait=True)
+    db_auto.shutdown(wait=True)
     server.terminate()
     server.wait(timeout=10)
