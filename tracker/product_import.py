@@ -6,7 +6,6 @@ from openpyxl import load_workbook
 from .exports import workbook
 
 COLUMNS = [
-    ('label', '小项编号（可空）'),
     ('product', '产品名称'),
     ('model', '产品型号'),
     ('quantity', '数量'),
@@ -27,7 +26,7 @@ def template_bytes():
             ['供货方式', '填写 外部供应商 或 自供货。自供货不产生对外待付；内部成本仍需填写。'],
             ['销售币种', 'USD / CNY / EUR / HKD / GBP；汇率在网页统一设置中每种填写一次。'],
             ['必填', '产品名称、型号、正整数数量、正销售单价、销售币种、供货方式、非负单位成本；外部供货必填供应商。'],
-            ['可空', '小项编号留空自动编号；客户运费留空为0。日期、付款条款及单价是否含运费在网页统一设置。'],
+            ['可空', '小项编号由系统生成，无需填写；客户运费留空为0。日期、付款条款及单价是否含运费在网页统一设置。'],
             ['安全与核对', '不支持公式、宏及合并单元格。导入先生成草稿，确认保存后才更新订单。相同型号不同补单不自动合并。'],
         ]),
     ])
@@ -52,11 +51,13 @@ def import_rows(upload):
             sheet = book['产品录入']
             if sheet.max_row and sheet.max_row > 101:
                 raise ValidationError('单次最多导入100行，请移除多余空行及格式。')
-            if sheet.max_column and sheet.max_column > len(COLUMNS):
+            legacy = next(sheet.iter_rows(max_row=1, values_only=True))[0] == '小项编号（可空）'
+            columns = ([('label', '小项编号（可空）')] if legacy else []) + COLUMNS
+            if sheet.max_column and sheet.max_column > len(columns):
                 raise ValidationError('表格列数与模板不一致。')
-            rows = sheet.iter_rows(max_row=101, max_col=len(COLUMNS))
+            rows = sheet.iter_rows(max_row=101, max_col=len(columns))
             headers = [c.value for c in next(rows)]
-            if headers != [label for key, label in COLUMNS]:
+            if headers != [label for key, label in columns]:
                 raise ValidationError('列标题或顺序与模板不一致，请下载固定模板。')
             result = []
             for row in rows:
@@ -65,7 +66,8 @@ def import_rows(upload):
                 values = [c.value for c in row]
                 if all(value is None or value == '' for value in values):
                     continue
-                entry = {key: str(value).strip() if value is not None else '' for (key, label), value in zip(COLUMNS, values)}
+                entry = {key: str(value).strip() if value is not None else '' for (key, label), value in zip(columns, values)}
+                entry.pop('label', None)  # Older templates remain usable, but manual labels are ignored.
                 entry['currency'] = entry['currency'].upper()
                 entry['supply_type'] = {'外部供应商':'external', '自供货':'self', 'external':'external', 'self':'self'}.get(entry['supply_type'], entry['supply_type'])
                 entry['freight'] = entry['freight'] or '0'

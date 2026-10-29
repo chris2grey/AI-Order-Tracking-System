@@ -12,7 +12,7 @@ from django.core.management import call_command, CommandError
 from django.db import connection, transaction
 from django.utils import timezone
 
-from .models import Transaction
+from .models import Transaction, Line
 
 EXCLUDED_MODELS = {'contenttypes.contenttype', 'auth.permission', 'sessions.session'}
 
@@ -148,8 +148,22 @@ def restore_backup(source):
                 if any(m._base_manager.exists() for m in models):
                     raise CommandError('目标数据库已有数据，停止恢复。')
                 call_command('loaddata', str(temp / 'database.json'), verbosity=0)
+                # Older fixtures predate system serials; preserve original labels and IDs.
+                for order_id in Line.objects.filter(sequence__isnull=True).values_list('order_id', flat=True).distinct():
+                    used = set(Line.objects.filter(order_id=order_id, sequence__isnull=False).values_list('sequence', flat=True))
+                    number = 1
+                    for line in Line.objects.filter(order_id=order_id, sequence__isnull=True).order_by('pk'):
+                        while number in used:
+                            number += 1
+                        Line.objects.filter(pk=line.pk).update(sequence=number)
+                        used.add(number)
                 actual_counts = {m._meta.label_lower: m._base_manager.count() for m in models}
-                if actual_counts != manifest.get('counts'):
+                expected_counts = dict(manifest.get('counts') or {})
+                # Only these newly introduced empty tables may be absent in an old backup.
+                for label in ['tracker.transactioncorrection', 'tracker.shipmentfreightrecord', 'tracker.allocationcoverage']:
+                    if label not in expected_counts and actual_counts.get(label) == 0:
+                        expected_counts[label] = 0
+                if actual_counts != expected_counts:
                     raise CommandError('恢复后记录数量与备份不一致，已回滚。')
                 referenced = {'private/' + name for name in Transaction.objects.exclude(attachment='').values_list('attachment', flat=True)}
                 if referenced != {name for name in manifest['files'] if name.startswith('private/')}:

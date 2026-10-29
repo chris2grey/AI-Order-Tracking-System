@@ -150,16 +150,19 @@ def order_data(order):
 
 
 def line_data(line):
-    return {**values(line, 'id order_id label product model date quantity price currency quote_fx cost supply_type supplier freight_included freight customer_terms supplier_terms'),
+    return {**values(line, 'id order_id label sequence number product model date quantity price currency quote_fx cost supply_type supplier freight_included freight customer_terms supplier_terms'),
             'sale_total': line.sale_total, 'cost_total': line.cost_total, 'payable_total': line.payable_total}
 
 
 def allocation_data(item):
-    return values(item, 'id line_id transaction_id shipment_item_id source_amount settlement_rate target_amount reason created_by_id created_at')
+    return {**values(item, 'id line_id transaction_id shipment_item_id source_amount settlement_rate target_amount reason created_by_id created_at'),
+            'batch_coverages': [values(c, 'shipment_item_id amount') for c in item.coverages.all()]}
 
 
 def transaction_data(item):
     return {**values(item, 'id order_id kind date amount currency party platform fx fx_source purpose reference created_by_id created_at'),
+            'effective_party': item.effective_party, 'effective_amount': item.effective_amount, 'is_void': item.is_void,
+            'corrections': [values(c, 'id action party source_delta reason created_by_id created_at') for c in item.corrections.all()],
             'equivalent': item.equivalent, 'target_currency': item.target_currency, 'unallocated': item.unallocated,
             'attachment_url': f'/api/v1/transactions/{item.pk}/attachment/' if item.attachment else None,
             'allocations': [allocation_data(a) for a in item.allocations.all()]}
@@ -167,6 +170,8 @@ def transaction_data(item):
 
 def shipment_data(ship):
     return {**values(ship, 'id order_id reference date address carrier_type carrier domestic_date domestic_tracking international_tracking freight freight_currency notes created_by_id'),
+            'current_freight': ship.current_freight, 'current_freight_currency': ship.current_freight_currency,
+            'freight_records': [values(r, 'id amount currency reason created_by_id created_at') for r in ship.freight_records.all()],
             'items': [{**values(i, 'id line_id quantity sale_amount cost_amount internal_cost_amount receipt_reserved payment_reserved'),
                        'receivable': i.due('receipt'), 'payable': i.due('payment')} for i in ship.items.all()]}
 
@@ -257,6 +262,7 @@ def lines(request, pk):
     validate_form(form)
     line = form.save(commit=False)
     line.order = order
+    line.assign_number(order)
     line.full_clean()
     line.save()
     remember_rate(order, line.currency, 'CNY', line.quote_fx)
@@ -268,7 +274,7 @@ def lines(request, pk):
 def transactions(request, pk):
     order = accessible(request.user, pk, write=request.method == 'POST', admin=request.method == 'POST')
     if request.method == 'GET':
-        return paginated(request, order.transactions.prefetch_related('allocations'), transaction_data)
+        return paginated(request, order.transactions.prefetch_related('corrections', 'allocations__coverages'), transaction_data)
     data = payload(request)
     kind = data.get('kind')
     if kind not in ('receipt', 'payment'):
@@ -304,7 +310,7 @@ def allocations(request, pk):
     form = AllocationForm(data, order=order, txn=txn)
     only_fields(data, form.fields)
     d = validate_form(form)
-    item = allocate(request.user, txn.pk, d['line'].pk, d['amount'], d['rate'], d['reason'], d['shipment_item'] or None)
+    item = allocate(request.user, txn.pk, d['line'].pk, d['amount'], d['rate'], d['reason'], d['shipment_item'] or None, auto_batches=not bool(d['shipment_item']))
     return JsonResponse({**allocation_data(item), 'order_id': order.pk}, status=201)
 
 
@@ -412,3 +418,49 @@ def ready(request):
     except Exception:
         return JsonResponse({'status': 'unavailable'}, status=503)
     return JsonResponse({'status': 'ok'})
+
+
+@endpoint(('POST',), mutation=True)
+def transaction_correction(request, pk):
+    from .forms import TransactionCorrectionForm
+    from .services import correct_transaction
+    txn = get_object_or_404(Transaction, pk=pk, order__in=visible_orders(request.user))
+    accessible(request.user, txn.order_id, write=True, admin=True)
+    data = payload(request)
+    only_fields(data, ['action', 'party', 'reason'])
+    form = TransactionCorrectionForm(data)
+    form.fields.pop('token')
+    d = validate_form(form)
+    correct_transaction(request.user, pk, d['action'], d['party'], d['reason'])
+    txn.refresh_from_db()
+    return JsonResponse(transaction_data(txn))
+
+
+@endpoint(('POST',), mutation=True)
+def shipment_logistics(request, pk):
+    from .forms import LogisticsForm
+    from .services import update_logistics
+    ship = get_object_or_404(Shipment, pk=pk, order__in=visible_orders(request.user))
+    accessible(request.user, ship.order_id, write=True)
+    data = payload(request)
+    form = LogisticsForm(data, instance=ship)
+    only_fields(data, form.fields)
+    d = validate_form(form)
+    reason = d.pop('reason')
+    ship = update_logistics(request.user, pk, d, reason)
+    return JsonResponse(shipment_data(ship))
+
+
+@endpoint(('POST',), mutation=True)
+def shipment_freight(request, pk):
+    from .forms import FreightForm
+    from .services import record_freight
+    ship = get_object_or_404(Shipment, pk=pk, order__in=visible_orders(request.user))
+    accessible(request.user, ship.order_id, write=True, admin=True)
+    data = payload(request)
+    only_fields(data, ['amount', 'currency', 'reason'])
+    form = FreightForm(data)
+    form.fields.pop('token')
+    d = validate_form(form)
+    record_freight(request.user, pk, d['amount'], d['currency'], d['reason'])
+    return JsonResponse(shipment_data(ship))

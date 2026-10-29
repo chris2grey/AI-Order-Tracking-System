@@ -2,7 +2,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction as db_transaction
 from django.db.models import Prefetch
-from .models import Order, Line, Transaction, Allocation, Shipment, ShipmentLine, Audit, ZERO, money
+from .models import Order, Line, Transaction, Allocation, Shipment, ShipmentLine, Audit, ZERO, money, AllocationCoverage, TransactionCorrection, ShipmentFreightRecord
 
 def visible_orders(user):
     return Order.objects.all() if user.is_superuser else Order.objects.filter(owner=user)
@@ -13,7 +13,8 @@ def with_order_data(queryset):
         Prefetch('lines', queryset=Line.objects.prefetch_related(
             Prefetch('allocations', queryset=Allocation.objects.select_related('transaction')),
             'shipment_items')),
-        Prefetch('transactions', queryset=Transaction.objects.prefetch_related(Prefetch('allocations',queryset=Allocation.objects.select_related('line','shipment_item')))))
+        Prefetch('transactions', queryset=Transaction.objects.prefetch_related('corrections',
+            Prefetch('allocations',queryset=Allocation.objects.select_related('line','shipment_item')))))
 
 def authorize(user, order, write=False, admin=False):
     if not user.is_active or (admin and not user.is_superuser) or (not user.is_superuser and order.owner_id != user.id):
@@ -60,12 +61,14 @@ def summary(order):
     return {'rows': rows, 'currencies': currencies, 'cost': cost, 'external_cost': external_cost, 'internal_cost': internal_cost, 'payment': payment, 'payable': money(external_cost - payment), 'payment_pct': percent(payment, external_cost), 'quantity': units, 'shipped': shipped, 'ship_pct': percent(shipped, units), 'unallocated': unallocated, 'complete': complete}
 
 @db_transaction.atomic
-def allocate(user, txn_id, line_id, amount, rate, reason, shipment_item_id=None):
+def allocate(user, txn_id, line_id, amount, rate, reason, shipment_item_id=None, *, auto_batches=False):
     # The shared order row serializes ALL fund and shipment mutations in PostgreSQL.
     txn = Transaction.objects.select_related('order').get(pk=txn_id)
     order = Order.objects.select_for_update().get(pk=txn.order_id)
     authorize(user, order, write=True, admin=True)
     txn = Transaction.objects.select_for_update().get(pk=txn_id)
+    if txn.is_void:
+        raise ValidationError('该流水已冲销，不能继续分摊。')
     try:
         line = Line.objects.get(pk=line_id, order=order)
     except Line.DoesNotExist:
@@ -78,7 +81,7 @@ def allocate(user, txn_id, line_id, amount, rate, reason, shipment_item_id=None)
         raise ValidationError('原币与结算币种相同，结算汇率必须为 1。')
     if txn.kind == 'payment' and line.supply_type == 'self':
         raise ValidationError('自供货只记录内部成本，不接受供应商付款分摊。')
-    if txn.kind == 'payment' and txn.party.strip() != line.supplier.strip():
+    if txn.kind == 'payment' and txn.effective_party.strip() != line.supplier.strip():
         raise ValidationError('付款供应商必须与小项供应商一致。')
     target = money(amount * rate)
     total = line.sale_total if txn.kind == 'receipt' else line.payable_total
@@ -91,12 +94,21 @@ def allocate(user, txn_id, line_id, amount, rate, reason, shipment_item_id=None)
         item = ShipmentLine.objects.filter(pk=shipment_item_id, line=line).first()
         if not item or target > item.due(txn.kind):
             raise ValidationError('发货批次不匹配，或超过本批待结算金额。')
-    elif any(s.due(txn.kind) > 0 for s in line.shipment_items.all()):
+    elif not auto_batches and any(s.due(txn.kind) > 0 for s in line.shipment_items.all()):
         raise ValidationError('此小项存在已发货未结算批次，请指定该批次分摊；需要跨批时分多次操作。')
     if not str(reason).strip():
         raise ValidationError('请填写分摊说明。')
     allocation = Allocation.objects.create(transaction=txn, line=line, shipment_item=item, source_amount=amount, settlement_rate=rate, target_amount=target, reason=reason, created_by=user)
-    audit(order, user, '款项分摊', f'流水 #{txn.id} → {line.label}：{amount} {txn.currency} = {target} {target_currency}；批次 {item.shipment_id if item else "未发货资金池"}；{reason}')
+    if auto_batches:
+        remaining_target = target
+        for batch in line.shipment_items.select_related('shipment').order_by('shipment__date', 'shipment_id', 'pk'):
+            covered = min(remaining_target, batch.due(txn.kind))
+            if covered > 0:
+                AllocationCoverage.objects.create(allocation=allocation, shipment_item=batch, amount=covered)
+                remaining_target -= covered
+            if remaining_target <= 0:
+                break
+    audit(order, user, '款项分摊', f'流水 #{txn.id} → {line.label}：{amount} {txn.currency} = {target} {target_currency}；批次 {item.shipment_id if item else ("按产品自动分配" if auto_batches else "未发货资金池")}；{reason}')
     remember_rate(order, txn.currency, target_currency, rate)
     return allocation
 
@@ -113,6 +125,7 @@ def shipment_quote(line, quantity):
         remaining_value = total - sum((getattr(s, field) for s in previous), ZERO)
         batch_value = remaining_value if quantity == remaining else money(remaining_value * quantity / remaining)
         pool = sum((a.target_amount for a in line.allocations.filter(transaction__kind=kind, shipment_item__isnull=True)), ZERO)
+        pool -= sum((c.amount for c in AllocationCoverage.objects.filter(allocation__line=line, allocation__transaction__kind=kind)), ZERO)
         pool -= sum((getattr(s, reserved) for s in previous), ZERO)
         covered = pool if quantity == remaining else money(pool * quantity / remaining)
         covered = min(batch_value, covered)
@@ -178,3 +191,59 @@ def remember_rate(order, source, target, rate):
         rates[key] = str(rate)
         order.exchange_rates = rates
         order.save(update_fields=['exchange_rates'])
+
+
+@db_transaction.atomic
+def correct_transaction(user, txn_id, action, party, reason):
+    txn = Transaction.objects.select_related('order').get(pk=txn_id)
+    order = Order.objects.select_for_update().get(pk=txn.order_id)
+    authorize(user, order, write=True, admin=True)
+    txn = Transaction.objects.select_for_update().get(pk=txn_id)
+    if txn.is_void or txn.allocations.exists():
+        raise ValidationError('只允许处理尚未分摊、尚未冲销的流水；已有分摊须先核对账目，不能直接改写。')
+    reason, party = str(reason).strip(), str(party).strip()
+    if not reason or len(reason) > 240 or action not in ['party', 'void']:
+        raise ValidationError('请选择处理方式并填写最多240字的原因。')
+    if action == 'party' and (not party or len(party) > 160 or party == txn.effective_party):
+        raise ValidationError('请填写不同于当前名称的正确公司 / 供应商名称。')
+    original_party = txn.effective_party
+    correction = TransactionCorrection(transaction=txn, action=action, party=party if action == 'party' else '',
+                                       source_delta=-txn.amount if action == 'void' else ZERO, reason=reason, created_by=user)
+    correction.full_clean()
+    correction.save()
+    audit(order, user, '冲销未分摊误录流水' if action == 'void' else '更正流水公司名称',
+          f'流水 #{txn.pk}；原名称 {original_party}；新名称 {party if action == "party" else "—"}；原币变动 {correction.source_delta} {txn.currency}；原因 {reason}')
+    return correction
+
+
+@db_transaction.atomic
+def update_logistics(user, shipment_id, data, reason):
+    ship = Shipment.objects.select_related('order').get(pk=shipment_id)
+    order = Order.objects.select_for_update().get(pk=ship.order_id)
+    authorize(user, order, write=True)
+    allowed = ['address', 'carrier_type', 'carrier', 'domestic_date', 'domestic_tracking', 'international_tracking', 'notes']
+    if not str(reason).strip() or len(reason) > 240 or set(data) - set(allowed):
+        raise ValidationError('物流信息或修改说明无效。')
+    changes = []
+    for field in allowed:
+        if field in data and getattr(ship, field) != data[field]:
+            changes.append(f'{field}: {getattr(ship, field)} → {data[field]}')
+            setattr(ship, field, data[field])
+    ship.full_clean()
+    if changes:
+        ship.save(update_fields=[field for field in allowed if field in data])
+        audit(order, user, '修改物流信息', f'批次 #{ship.pk}；' + '；'.join(changes) + f'；原因 {reason}')
+    return ship
+
+
+@db_transaction.atomic
+def record_freight(user, shipment_id, amount, currency, reason):
+    ship = Shipment.objects.select_related('order').get(pk=shipment_id)
+    order = Order.objects.select_for_update().get(pk=ship.order_id)
+    authorize(user, order, write=True, admin=True)
+    previous, previous_currency = ship.current_freight, ship.current_freight_currency
+    record = ShipmentFreightRecord(shipment=ship, amount=amount, currency=currency, reason=str(reason).strip(), created_by=user)
+    record.full_clean()
+    record.save()
+    audit(order, user, '补录 / 更正运费', f'批次 #{ship.pk}；原运费 {previous if previous is not None else "待补录"} {previous_currency} → {record.amount} {record.currency}；{record.reason}')
+    return record

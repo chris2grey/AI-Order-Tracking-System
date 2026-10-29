@@ -47,7 +47,7 @@ class LineForm(StyledModelForm):
     section_definitions = [('产品与数量','同型号的不同补单也要分别记录。',['label','date','product','model','quantity']),('销售报价与运费','报价汇率用于记录定价依据，不自动抵扣收款。',['price','currency','quote_fx','freight_included','freight']),('供应商与结算约定','采购成本按人民币核算；付款约定分别保存。',['supply_type','supplier','cost','customer_terms','supplier_terms'])]
     class Meta:
         model = Line
-        exclude = ['order']
+        exclude = ['order', 'sequence']
 
     def __init__(self, *args, **kwargs):
         if args and args[0] is not None:
@@ -56,6 +56,9 @@ class LineForm(StyledModelForm):
                 data['supply_type'] = 'external'
             args = (data, *args[1:])
         super().__init__(*args, **kwargs)
+        if 'label' in self.fields:
+            self.fields['label'].disabled = True
+            self.fields['label'].required = False
         self.fields['supplier'].required = False
 
     def clean(self):
@@ -72,6 +75,9 @@ class LineForm(StyledModelForm):
             data['supplier'] = '自供货'
         elif not data.get('supplier', '').strip():
             self.add_error('supplier', '外部供货请填写供应商名称。')
+        from .catalog import normalize_name
+        if data.get('supplier'):
+            data['supplier'] = normalize_name(data['supplier'])
         return data
 
 class SalespersonCreationForm(UserCreationForm):
@@ -93,10 +99,13 @@ class TransactionForm(StyledModelForm):
         self.target_currency = 'CNY' if kind == 'payment' else 'USD'
         self.fields['date'].label = '付款日期' if kind == 'payment' else '收到款的日期'
         self.fields['party'].label = '供应商名称' if kind == 'payment' else '付款公司'
+        self.fields['party'].help_text = '优先选择已保存的名称。供应商付款须与产品供应商一致；尚未分摊时可更正误填名称。'
         self.fields['platform'].label = '付款平台' if kind == 'payment' else '收款平台'
         self.fields['fx'].help_text = f'1 原币 = 多少 {self.target_currency}。相同币种填 1。'
         self.fields['attachment'].widget.attrs['accept'] = '.pdf,.png,.jpg,.jpeg'
         self.fields['attachment'].help_text = 'PDF / PNG / JPG，最大 10MB；仅订单授权人员可下载。'
+        self.fields['purpose'].required = False
+        self.fields['purpose'].label = '款项用途（选填）'
         self.fields['reference'].help_text = '填写平台流水编号，用于检查同一订单的重复录入。'
     class Meta:
         model = Transaction
@@ -108,6 +117,14 @@ class TransactionForm(StyledModelForm):
             if data.get(field) is not None and data[field] <= 0:
                 self.add_error(field, '必须大于零。')
         return data
+
+    def clean_party(self):
+        from .catalog import normalize_name
+        return normalize_name(self.cleaned_data['party'])
+
+    def clean_platform(self):
+        from .catalog import normalize_name
+        return normalize_name(self.cleaned_data['platform'])
 
     def clean_attachment(self):
         f = self.cleaned_data.get('attachment')
@@ -129,6 +146,11 @@ class ShipmentForm(StyledModelForm):
         model = Shipment
         exclude = ['order', 'created_by', 'reference']
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['freight'].help_text = '账单未出可留空，发货后在“补录运费 / 修改物流”中填写。明确免运费时填写 0。'
+        self.fields['international_tracking'].help_text = '可暂空；香港换单后可以更新，原单号保留在操作记录中。'
+
 class AllocationForm(forms.Form):
     line = forms.ModelChoiceField(queryset=Line.objects.none(), label='分摊到订单小项')
     shipment_item = forms.ChoiceField(label='资金用途', required=False)
@@ -145,12 +167,12 @@ class AllocationForm(forms.Form):
         for line in order.lines.all():
             s = line_summary(line)
             due = s['receivable'] if not txn or txn.kind == 'receipt' else s['payable']
-            if txn and (due <= 0 or (txn.kind == 'payment' and txn.party.strip() != line.supplier.strip())):
+            if txn and (due <= 0 or (txn.kind == 'payment' and txn.effective_party.strip() != line.supplier.strip())):
                 continue
             eligible.append(line.pk)
             self.line_metadata[str(line.pk)] = {'currency':line.currency if not txn or txn.kind=='receipt' else 'CNY','due':str(due),'remaining':s['remaining'],'supplier':line.supplier,'label':str(line)}
         self.fields['line'].queryset = order.lines.filter(pk__in=eligible)
-        self.fields['line'].label_from_instance = lambda line: f'{line.label} · {line.model} · 待结算 {self.line_metadata[str(line.pk)]["due"]} {self.line_metadata[str(line.pk)]["currency"]}'
+        self.fields['line'].label_from_instance = lambda line: f'{line.number} | {line.product} | {line.model} · 待结算 {self.line_metadata[str(line.pk)]["due"]} {self.line_metadata[str(line.pk)]["currency"]}'
         choices = [('', '未发货资金池（按剩余数量均摊）')]
         for ship in order.shipments.all():
             for item in ship.items.select_related('line'):
@@ -172,15 +194,13 @@ class AllocationForm(forms.Form):
 class BatchLineForm(LineForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields['label'].required = False
-        self.fields['label'].widget.attrs['placeholder'] = '自动编号'
         for name in ['product', 'model', 'supplier']:
             self.fields[name].widget.attrs['list'] = f'entry-{name}-options'
             self.fields[name].widget.attrs['autocomplete'] = 'off'
 
     class Meta:
         model = Line
-        fields = ['label', 'product', 'model', 'quantity', 'price', 'currency', 'supply_type', 'supplier', 'cost', 'freight']
+        fields = ['product', 'model', 'quantity', 'price', 'currency', 'supply_type', 'supplier', 'cost', 'freight']
 
 class LineDefaultsForm(forms.Form):
     date = forms.DateField(label='本次下单日期', widget=forms.DateInput(format='%Y-%m-%d', attrs={'type': 'date'}))
@@ -193,3 +213,31 @@ class LineDefaultsForm(forms.Form):
             if currency == 'CNY':
                 continue
             self.fields[f'rate_{currency}'] = forms.DecimalField(label=f'1 {currency} = CNY', max_digits=16, decimal_places=8, min_value=Decimal('0.00000001'), required=False)
+
+
+class LogisticsForm(StyledModelForm):
+    reason = forms.CharField(label='修改说明', max_length=240, help_text='例如：香港转运换单号。原信息保留在操作记录中。')
+
+    class Meta:
+        model = Shipment
+        fields = ['carrier_type', 'carrier', 'address', 'domestic_date', 'domestic_tracking', 'international_tracking', 'notes']
+
+
+class FreightForm(forms.Form):
+    amount = forms.DecimalField(label='本批实际运费总额', min_value=0, max_digits=16, decimal_places=2)
+    currency = forms.ChoiceField(label='运费币种', choices=CURRENCIES)
+    reason = forms.CharField(label='补录 / 更正说明', max_length=240)
+    token = forms.UUIDField(widget=forms.HiddenInput())
+
+
+class TransactionCorrectionForm(forms.Form):
+    submit_label = '保存更正 →'
+
+    @property
+    def sections(self):
+        return [{'title': '更正记录', 'description': '保留原流水和凭证，追加原因及操作人。', 'fields': list(self)}]
+
+    action = forms.ChoiceField(label='处理方式', choices=[('party', '更正公司名称'), ('void', '冲销未分摊的误录流水')])
+    party = forms.CharField(label='正确的公司 / 供应商名称', max_length=160, required=False, widget=forms.TextInput(attrs={'list': 'entry-party-options'}))
+    reason = forms.CharField(label='更正 / 冲销原因', max_length=240)
+    token = forms.UUIDField(widget=forms.HiddenInput())

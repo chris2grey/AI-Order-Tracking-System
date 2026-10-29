@@ -119,3 +119,46 @@ class BackupTests(TransactionTestCase):
             with self.assertRaises(OSError):
                 restore_backup(self.backup)
             self.assertFalse(Order.objects.exists())
+
+
+    def test_backup_restores_new_financial_history_and_batch_coverage(self):
+        from .services import confirm_shipment, allocate, record_freight, correct_transaction
+        from .models import AllocationCoverage, Shipment, ShipmentFreightRecord, TransactionCorrection
+        import uuid
+        line=Line.objects.get()
+        ship=confirm_shipment(self.admin,self.order.pk,{line.pk:1},{'address':'Fictional','carrier_type':'own','carrier':'Fictional'},uuid.uuid4())
+        allocate(self.admin,self.txn.pk,line.pk,'0.12',1,'Fictional',auto_batches=True)
+        record_freight(self.admin,ship.pk,'9.99','CNY','Fictional bill')
+        wrong=Transaction.objects.create(order=self.order,amount=1,kind='receipt',currency='USD',party='Fictional',platform='Bank',reference='mistake',fx=1,created_by=self.admin)
+        correct_transaction(self.admin,wrong.pk,'void','','Fictional mistake')
+        create_backup(self.backup)
+        call_command('flush',interactive=False,verbosity=0)
+        with override_settings(MEDIA_ROOT=self.root/'new-history-private'):
+            restore_backup(self.backup)
+            self.assertEqual(AllocationCoverage.objects.get().amount,Line.objects.get().sale_total)
+            self.assertEqual(ShipmentFreightRecord.objects.count(),1)
+            self.assertEqual(str(Shipment.objects.get().current_freight),'9.99')
+            self.assertEqual(TransactionCorrection.objects.get().source_delta,-1)
+            self.assertTrue(Transaction.objects.get(reference='mistake').is_void)
+
+    def test_legacy_backup_without_new_tables_or_serials_is_compatible(self):
+        create_backup(self.backup)
+        with ZipFile(self.backup) as archive:
+            entries={name:archive.read(name) for name in archive.namelist()}
+        fixture=json.loads(entries['database.json'])
+        for record in fixture:
+            if record['model']=='tracker.line':
+                record['fields'].pop('sequence')
+        entries['database.json']=json.dumps(fixture).encode()
+        manifest=json.loads(entries['manifest.json'])
+        for label in ['tracker.transactioncorrection','tracker.shipmentfreightrecord','tracker.allocationcoverage']:
+            manifest['counts'].pop(label)
+        manifest['files']['database.json']={'size':len(entries['database.json']),'sha256':hashlib.sha256(entries['database.json']).hexdigest()}
+        entries['manifest.json']=json.dumps(manifest).encode()
+        with ZipFile(self.backup,'w') as archive:
+            for name,content in entries.items():archive.writestr(name,content)
+        call_command('flush',interactive=False,verbosity=0)
+        with override_settings(MEDIA_ROOT=self.root/'legacy-restored-private'):
+            restore_backup(self.backup)
+            self.assertEqual(Line.objects.get().number,'001')
+            self.assertEqual(str(Line.objects.get().price),'0.1234')

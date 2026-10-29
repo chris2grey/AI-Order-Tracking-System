@@ -1,3 +1,81 @@
+// Prevent accidental edits while scrolling over a focused numeric/date control.
+document.addEventListener('wheel', event => {
+  const input = document.activeElement;
+  if (input instanceof HTMLInputElement && ['number','date','time','datetime-local'].includes(input.type)) {
+    event.preventDefault();
+  }
+}, {passive:false, capture:true});
+
+let pickerCounter = 0;
+function setupNamePickers() {
+  document.querySelectorAll('input[list]:not([data-picker-ready])').forEach(input => {
+    const list = document.getElementById(input.getAttribute('list'));
+    if (!list) return;
+    input.dataset.pickerReady = 'true';
+    input.removeAttribute('list');
+    const wrapper = document.createElement('div');
+    wrapper.className = 'name-picker';
+    input.before(wrapper); wrapper.append(input);
+    const toggle = document.createElement('button');
+    toggle.type = 'button'; toggle.className = 'name-picker-toggle'; toggle.textContent = '⌄';
+    toggle.setAttribute('aria-label', '展开已保存的名称选项'); wrapper.append(toggle);
+    const menu = document.createElement('div');
+    menu.id = 'name-options-' + (++pickerCounter); menu.className = 'name-picker-menu';
+    menu.setAttribute('role','listbox'); menu.hidden = true; document.body.append(menu);
+    input.setAttribute('role','combobox'); input.setAttribute('aria-autocomplete','list');
+    input.setAttribute('aria-controls',menu.id); input.setAttribute('aria-expanded','false');
+    let current = -1;
+    function close() { menu.hidden=true; input.setAttribute('aria-expanded','false'); input.removeAttribute('aria-activedescendant'); }
+    function choose(value) {
+      input.value=value; close(); input.focus();
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      input.dispatchEvent(new Event('change',{bubbles:true}));
+      close();
+    }
+    function show(all=false) {
+      if(input.readOnly || input.disabled) return;
+      const query=all ? '' : input.value.trim().toLocaleLowerCase();
+      const values=[...list.options].map(o=>o.value).filter(v=>!query || v.toLocaleLowerCase().includes(query)).slice(0,80);
+      menu.replaceChildren(); current=-1;
+      values.forEach((value,index)=>{
+        const option=document.createElement('div');
+        option.setAttribute('role','option'); option.id=menu.id+'-'+index; option.textContent=value;
+        option.addEventListener('pointerdown',event=>{event.preventDefault();choose(value);});
+        menu.append(option);
+      });
+      if(!values.length) {
+        const empty=document.createElement('div'); empty.className='name-picker-empty';
+        empty.textContent='暂无匹配名称，可继续输入新名称'; menu.append(empty);
+      }
+      const rect=input.getBoundingClientRect();
+      menu.style.left=Math.max(8,Math.min(rect.left,innerWidth-260))+'px';
+      menu.style.top=(rect.bottom+4)+'px'; menu.style.width=Math.min(Math.max(rect.width,250),innerWidth-16)+'px';
+      menu.hidden=false; input.setAttribute('aria-expanded','true');
+    }
+    input.addEventListener('input',()=>show());
+    input.addEventListener('focus',()=>{if(list.options.length)show(!input.value);});
+    input.addEventListener('blur',close);
+    toggle.addEventListener('pointerdown',event=>event.preventDefault());
+    toggle.addEventListener('click',()=>{if(!menu.hidden)close();else{input.focus();show(true);}});
+    input.addEventListener('keydown',event=>{
+      if(event.key==='Escape'){close();return;}
+      if(['ArrowDown','ArrowUp'].includes(event.key)){
+        event.preventDefault(); if(menu.hidden)show(true);
+        const options=[...menu.querySelectorAll('[role=option]')];
+        if(!options.length)return;
+        current=(current+(event.key==='ArrowDown'?1:-1)+options.length)%options.length;
+        options.forEach((o,i)=>o.setAttribute('aria-selected',String(i===current)));
+        input.setAttribute('aria-activedescendant',options[current].id); options[current].scrollIntoView({block:'nearest'});
+      } else if(event.key==='Enter' && !menu.hidden && current>=0) {
+        event.preventDefault();choose(menu.querySelectorAll('[role=option]')[current].textContent);
+      }
+    });
+    window.addEventListener('resize',close);
+    document.addEventListener('scroll',event=>{if(!menu.contains(event.target))close();},true);
+  });
+}
+setupNamePickers();
+
 document.querySelectorAll('[data-confirm]').forEach(button => button.addEventListener('click', event => {
   if (!window.confirm(button.dataset.confirm)) event.preventDefault();
 }));
@@ -157,6 +235,7 @@ if (productForm) {
   const body = document.getElementById('product-rows');
   const total = document.getElementById('id_lines-TOTAL_FORMS');
   function refreshProducts() {
+    setupNamePickers();
     const totals = {};
     let costs = 0n, count = 0;
     const used = new Set();
@@ -167,7 +246,7 @@ if (productForm) {
       field('supplier').required = false;
       if (self) { if(field('supplier').value!=='自供货') field('supplier').dataset.external=field('supplier').value; field('supplier').value='自供货'; }
       else if(field('supplier').value==='自供货') field('supplier').value=field('supplier').dataset.external || '';
-      const active = ['product','model','quantity','price','cost','label'].some(n=>field(n).value);
+      const active = ['product','model','quantity','price','cost'].some(n=>field(n).value);
       if (!active) continue;
       count++;
       const currency=field('currency').value;

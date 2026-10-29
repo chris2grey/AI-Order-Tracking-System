@@ -12,7 +12,7 @@ from django.db import close_old_connections, connection
 from django.test import Client, TransactionTestCase
 
 from .models import Order, Line, Transaction, Allocation, Shipment
-from .services import allocate, confirm_shipment
+from .services import allocate, confirm_shipment, correct_transaction
 
 
 @skipUnless(connection.vendor == 'postgresql', '需要 PostgreSQL 实例验证行锁')
@@ -71,3 +71,20 @@ class PostgresConcurrencyTests(TransactionTestCase):
         self.assertEqual(results[0], results[1])
         self.assertEqual(results[0][0], 201)
         self.assertEqual(Order.objects.filter(number='PG-IDEMPOTENT').count(), 1)
+
+    def test_concurrent_automatic_allocations_do_not_double_cover_batch(self):
+        ship=confirm_shipment(self.user,self.order.pk,{self.line.pk:3},
+            {'date':date.today(),'address':'Fictional','carrier_type':'own','carrier':'Test'},uuid.uuid4())
+        txn=Transaction.objects.create(order=self.order,kind='receipt',amount=30,currency='USD',party='Fictional',platform='Test',reference=uuid.uuid4().hex,created_by=self.user)
+        results=self.race(lambda user: allocate(user,txn.pk,self.line.pk,30,1,'Auto race',auto_batches=True).pk)
+        self.assertEqual(results.count('rejected'),1)
+        self.assertEqual(txn.allocations.count(),1)
+        self.assertEqual(ship.items.get().due('receipt'),0)
+        self.assertEqual(txn.unallocated,0)
+
+    def test_concurrent_voids_create_only_one_reversing_entry(self):
+        txn=Transaction.objects.create(order=self.order,kind='receipt',amount=30,currency='USD',party='Fictional',platform='Test',reference=uuid.uuid4().hex,created_by=self.user)
+        results=self.race(lambda user: correct_transaction(user,txn.pk,'void','','Mistake race').pk)
+        self.assertEqual(results.count('rejected'),1)
+        self.assertEqual(txn.corrections.count(),1)
+        self.assertEqual(txn.unallocated,0)

@@ -64,3 +64,15 @@ footer{font-size:12px;color:#637287}.lock-note small{font-size:11px}.profile sma
 .shared-settings .check-label{min-height:40px;margin:0 0 2px}
 @media(max-width:1100px){.shared-settings .shared-grid{grid-template-columns:repeat(2,minmax(180px,1fr))}}
 @media(max-width:600px){.shared-settings .shared-grid{grid-template-columns:1fr}.entry-table td:nth-child(1),.entry-table th:nth-child(1),.entry-table td:nth-child(2),.entry-table th:nth-child(2){position:static;box-shadow:none}}
+
+/* Stable identifiers and a searchable menu for previously saved names. */
+.line-sequence{font-variant-numeric:tabular-nums;color:#64748b;white-space:nowrap;width:64px}
+.product-identity{min-width:190px}.product-identity strong{font-size:14px;display:block}
+.bulk-table{min-width:1040px}.bulk-table th,.bulk-table td{padding:12px}
+.name-picker{position:relative;min-width:0;width:100%}.name-picker input{width:100%;padding-right:34px}
+.name-picker-toggle{position:absolute;right:2px;top:2px;bottom:2px;width:30px;border:0;background:transparent;color:#41628e;cursor:pointer}
+.name-picker-menu{position:fixed;z-index:1000;max-height:240px;overflow:auto;background:white;border:1px solid #a8bdd9;border-radius:7px;box-shadow:0 8px 25px #20385526;padding:4px}
+.name-picker-menu [role=option]{padding:9px 11px;font-size:14px;cursor:pointer;overflow-wrap:anywhere}
+.name-picker-menu [role=option]:hover,.name-picker-menu [aria-selected=true]{background:#eaf1ff;color:#194f9f}
+.name-picker-empty{padding:12px;color:#64748b;font-size:13px}
+input[type=number]{-moz-appearance:textfield}input::-webkit-inner-spin-button,input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
