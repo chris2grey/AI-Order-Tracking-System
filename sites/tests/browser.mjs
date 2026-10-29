@@ -1,6 +1,6 @@
 
 import {spawn,spawnSync}from'node:child_process';
-import {mkdirSync,writeFileSync,readdirSync,readFileSync}from'node:fs';
+import {mkdirSync,writeFileSync,readdirSync,readFileSync,unlinkSync}from'node:fs';
 import {randomBytes}from'node:crypto';
 import {chromium}from'playwright';
 const base='http://127.0.0.1:4180',output='browser-artifacts';
@@ -118,4 +118,5 @@ try{
   if(browser)await browser.close();
   server.kill('SIGTERM');await new Promise(r=>setTimeout(r,1000));
   writeFileSync(output+'/preview.log',log.replaceAll(password,'[redacted]').replaceAll(secret,'[redacted]'));
+  for(const path of ['.dev.vars','dist/server/.dev.vars'])try{unlinkSync(path);}catch{}
 }
