@@ -99,6 +99,7 @@ class TransactionForm(StyledModelForm):
         self.target_currency = 'CNY' if kind == 'payment' else 'USD'
         self.fields['date'].label = '付款日期' if kind == 'payment' else '收到款的日期'
         self.fields['party'].label = '供应商名称' if kind == 'payment' else '付款公司'
+        self.fields['party'].help_text = '优先选择已保存的名称。供应商付款须与产品供应商一致；尚未分摊时可更正误填名称。'
         self.fields['platform'].label = '付款平台' if kind == 'payment' else '收款平台'
         self.fields['fx'].help_text = f'1 原币 = 多少 {self.target_currency}。相同币种填 1。'
         self.fields['attachment'].widget.attrs['accept'] = '.pdf,.png,.jpg,.jpeg'
@@ -223,7 +224,7 @@ class LogisticsForm(StyledModelForm):
 
 
 class FreightForm(forms.Form):
-    amount = forms.DecimalField(label='实际运费', min_value=0, max_digits=16, decimal_places=2)
+    amount = forms.DecimalField(label='本批实际运费总额', min_value=0, max_digits=16, decimal_places=2)
     currency = forms.ChoiceField(label='运费币种', choices=CURRENCIES)
     reason = forms.CharField(label='补录 / 更正说明', max_length=240)
     token = forms.UUIDField(widget=forms.HiddenInput())
