@@ -1,0 +1,70 @@
+
+name: Sites checks
+on:
+  push:
+    paths: ['sites/**', '.github/workflows/sites-checks.yml']
+  pull_request:
+    paths: ['sites/**', '.github/workflows/sites-checks.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sites-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  sites:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: sites
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sites/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Generate and report schema
+        run: |
+          npm run db:generate
+          node scripts/emit-schema.mjs
+      - name: Check accounting, permissions, atomicity and spreadsheets
+        run: |
+          node --test tests/accounting.test.mjs tests/api.test.mjs tests/spreadsheet.test.mjs
+          python -m pip install openpyxl==3.1.5
+          python scripts/verify-xlsx.py
+      - name: Build Sites runtime
+        run: npm run build
+      - name: Install browser checks
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.0
+          npx playwright install --with-deps chromium
+      - name: Verify built app with local D1 and R2
+        run: node tests/browser.mjs
+      - name: Package checked build
+        run: |
+          node -e "require('fs').writeFileSync('BUILD_SOURCE.json',JSON.stringify({commit:process.env.GITHUB_SHA,repository:process.env.GITHUB_REPOSITORY},null,2))"
+      - name: Save checked runtime and schema
+        uses: actions/upload-artifact@v4
+        with:
+          name: sites-build
+          include-hidden-files: true
+          path: |
+            sites/dist/
+            sites/drizzle/
+            sites/BUILD_SOURCE.json
+          if-no-files-found: error
+      - name: Save verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sites-verification
+          path: |
+            sites/browser-artifacts/
+            sites/test-artifacts/
+          if-no-files-found: ignore
