@@ -94,7 +94,7 @@ try:
         party.locator('..').get_by_role('button',name='展开已保存的名称选项').click()
         page.get_by_role('option',name='虚构工厂',exact=True).click()
         assert party.input_value()=='虚构工厂'
-        assert not page.locator('#id_purpose').get_attribute('required')
+        assert page.locator('#id_purpose').get_attribute('required') is None
         txn=db(lambda: Transaction.objects.create(order=order,kind='receipt',amount=1500,currency='USD',party='虚构客户',platform='测试平台',fx=1,purpose='虚构界面验收',reference=uuid.uuid4().hex,created_by=admin))
         page.goto(f'{base}/transactions/{txn.pk}/allocate/')
         page.locator('#allocation-select-all').check()
@@ -143,7 +143,7 @@ try:
         later=db(lambda: Transaction.objects.create(order=order,kind='receipt',amount=1500,currency='USD',party='虚构客户',platform='测试平台',fx=1,reference=uuid.uuid4().hex,created_by=admin))
         page.goto(f'{base}/transactions/{later.pk}/allocate/')
         assert page.locator('[data-allocation-row]').count()==2
-        assert page.get_by_role('columnheader',name='总数量',exact=True).count()==1
+        assert page.get_by_role('columnheader',name='总数量',exact=True).count()==1, page.locator('thead').all_text_contents()
         page.locator('#allocation-select-all').check()
         page.get_by_role('button',name='填满所选余额',exact=True).click()
         page.screenshot(path=str(output/'04c-product-allocation-after-shipping.png'),full_page=True)

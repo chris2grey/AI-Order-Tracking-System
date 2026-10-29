@@ -30,6 +30,7 @@ function setupNamePickers() {
       input.value=value; close(); input.focus();
       input.dispatchEvent(new Event('input',{bubbles:true}));
       input.dispatchEvent(new Event('change',{bubbles:true}));
+      close();
     }
     function show(all=false) {
       if(input.readOnly || input.disabled) return;
