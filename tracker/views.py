@@ -18,7 +18,7 @@ from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404, render, redirect
 from django.urls import reverse
 from django.views.decorators.http import require_POST
-from .models import CURRENCIES, Order, Line, Transaction, Shipment, ShipmentLine, Archive, Allocation, ZERO, money
+from .models import CURRENCIES, Order, Line, Transaction, Shipment, ShipmentLine, Archive, Allocation, ZERO, money, AllocationCoverage
 from .forms import OrderForm, LineForm, TransactionForm, AllocationForm, ShipmentForm, SalespersonCreationForm
 from .services import visible_orders, with_order_data, authorize, summary, line_summary, shipment_quote, confirm_shipment, allocate, audit, order_rates, rate_for, remember_rate
 from .exports import archive_bytes
@@ -78,15 +78,27 @@ def orders(request):
 
 @login_required
 def order_detail(request, pk):
-    shipment_items = ShipmentLine.objects.select_related('line').prefetch_related(Prefetch('allocations',queryset=Allocation.objects.select_related('transaction')), 'coverages__allocation__transaction')
-    queryset = with_order_data(visible_orders(request.user)).prefetch_related(
-        Prefetch('shipments',queryset=Shipment.objects.prefetch_related('freight_records', Prefetch('items',queryset=shipment_items))),
-        Prefetch('archives',queryset=Archive.objects.defer('content')))
+    shipment_items = ShipmentLine.objects.select_related('line').prefetch_related(
+        Prefetch('allocations', queryset=Allocation.objects.select_related('transaction')),
+        Prefetch('coverages', queryset=AllocationCoverage.objects.select_related('allocation__transaction')))
+    # Reuse each item's data for both product summaries and batch rows.
+    queryset = visible_orders(request.user).select_related('owner').prefetch_related(
+        Prefetch('lines', queryset=Line.objects.prefetch_related(
+            Prefetch('allocations', queryset=Allocation.objects.select_related('transaction')),
+            Prefetch('shipment_items', queryset=shipment_items))),
+        Prefetch('transactions', queryset=Transaction.objects.prefetch_related('corrections',
+            Prefetch('allocations', queryset=Allocation.objects.select_related('line','shipment_item')))),
+        Prefetch('shipments', queryset=Shipment.objects.prefetch_related('freight_records')),
+        Prefetch('archives', queryset=Archive.objects.defer('content')))
     order = get_object_or_404(queryset, pk=pk)
     s = summary(order)
+    by_shipment = defaultdict(list)
+    for line in order.lines.all():
+        for item in line.shipment_items.all():
+            by_shipment[item.shipment_id].append(item)
     shipment_rows = []
     for ship in order.shipments.all():
-        for i in ship.items.all():
+        for i in by_shipment[ship.pk]:
             shipment_rows.append({'ship': ship, 'item': i, 'received': i.covered('receipt'), 'paid': i.covered('payment'), 'due_in': i.due('receipt'), 'due_out': i.due('payment')})
     return render(request, 'order.html', {'title': order.number, 'order': order, 's': s, 'shipment_rows': shipment_rows, 'audits':order.audits.select_related('actor')[:30]})
 
