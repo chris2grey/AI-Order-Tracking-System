@@ -109,6 +109,19 @@ try{
   await page.setViewportSize({width:390,height:844});
   if(!await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth))throw Error('Mobile viewport overflows');
   await page.screenshot({path:output+'/07-mobile-order.png',fullPage:true});
+  await page.setViewportSize({width:1500,height:1050});
+  await page.goto(base+'/#/team');await page.getByRole('heading',{name:'重置账号密码',exact:true}).waitFor();
+  const teamUsers=await (await context.request.get(base+'/api/users')).json(),coco=teamUsers.users.find(u=>u.username==='coco');
+  const replacement='Fictional-CI-new-coco-'+randomBytes(12).toString('hex');
+  await page.getByLabel('需要重置的账号 *',{exact:true}).selectOption(coco.id);
+  await page.getByLabel('新密码 *',{exact:true}).fill(replacement);
+  await page.getByLabel('重置说明 *',{exact:true}).fill('Fictional browser password reset');
+  await page.getByRole('button',{name:'重置密码',exact:true}).click();
+  await page.getByText('密码已重置，请将新密码单独交给对应同事。',{exact:true}).waitFor();
+  const colleague=await browser.newContext(),result=await colleague.request.post(base+'/api/login',{headers:{Origin:base},data:{username:'coco',password:replacement}});
+  if(!result.ok())throw Error('New colleague password did not work');
+  await colleague.close();
+  await page.screenshot({path:output+'/08-account-management.png',fullPage:true});
   if(errors.length)throw Error('Browser errors: '+errors.join('; '));
   console.log('Sites browser passed: persisted table entry, wheel guard, optional purpose, product allocations before/after shipment, late freight, Hong Kong tracking, name correction, real XLSX import and mobile layout.');
 }catch(error){

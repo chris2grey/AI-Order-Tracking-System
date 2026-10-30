@@ -98,3 +98,38 @@ test('private voucher namespace rejects foreign downloads and does not trust JSO
     const exported=await t.request('/orders/'+id+'/export',{cookie});assert.equal(exported.status,200);assert.equal((await exported.arrayBuffer()).byteLength>100,true);
   }finally{t.env.DB.close();}
 });
+
+test('admin password reset preserves orders, invalidates old sessions and records no plaintext password',async()=>{
+  const t=await setup();try{
+    const id=await t.create(),path='/users/'+t.chris.user.id+'/password',key=uuid(),next='New-fictional-passphrase-93',data={password:next,reason:'Fictional trial handoff'};
+    assert.equal((await t.request(path,{data})).status,401);
+    assert.equal((await t.request(path,{cookie:t.chris.cookie,data})).status,403);
+    assert.equal((await t.request(path,{cookie:t.admin.cookie,data:{...data,password:'123456'}})).status,400);
+    const first=await t.request(path,{cookie:t.admin.cookie,key,data});assert.equal(first.status,200);
+    assert.deepEqual(await first.json(),await (await t.request(path,{cookie:t.admin.cookie,key,data})).json());
+    assert.equal((await t.request(path,{cookie:t.admin.cookie,key,data:{...data,password:next+'changed'}})).status,409);
+    assert.equal((await t.request('/orders',{cookie:t.chris.cookie})).status,401);
+    assert.equal((await t.request('/login',{data:{username:'chris',password}})).status,401);
+    const login=await t.request('/login',{data:{username:'chris',password:next}});assert.equal(login.status,200);
+    const cookie=login.headers.get('Set-Cookie').split(';')[0];
+    assert.equal((await t.request('/orders/'+id,{cookie})).status,200);
+    const account=await t.env.DB.prepare('SELECT * FROM accounts WHERE id=?').bind(t.chris.user.id).first();
+    assert.equal(account.version,2);assert.equal(account.role,'sales');assert.equal(account.active,1);assert.notEqual(account.password,next);
+    const receipt=await t.env.DB.prepare('SELECT * FROM mutations WHERE key=?').bind(t.admin.user.id+':'+key).first();
+    assert(!JSON.stringify(receipt).includes(next));assert.equal(JSON.parse(receipt.response).reason,data.reason);
+  }finally{t.env.DB.close();}
+});
+test('self reset expires administrator cookie and concurrent resets preserve atomic version guards',async()=>{
+  const t=await setup();try{
+    const self='/users/'+t.admin.user.id+'/password',next='Fictional-replaced-admin-873';
+    const r=await t.request(self,{cookie:t.admin.cookie,data:{password:next,reason:'Fictional own reset'}});
+    assert.equal(r.status,200);assert(r.headers.get('Set-Cookie').includes('Max-Age=0'));
+    assert.equal((await t.request('/orders',{cookie:t.admin.cookie})).status,401);
+    const login=await t.request('/login',{data:{username:'summer',password:next}});
+    assert.equal(login.status,200);const cookie=login.headers.get('Set-Cookie').split(';')[0];
+    const path='/users/'+t.coco.user.id+'/password',data={password:'Fictional-new-coco-683',reason:'Concurrent admin requests'};
+    const results=await Promise.all([t.request(path,{cookie,data}),t.request(path,{cookie,data})]);
+    assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
+    assert.equal((await t.env.DB.prepare('SELECT version FROM accounts WHERE id=?').bind(t.coco.user.id).first()).version,2);
+  }finally{t.env.DB.close();}
+});

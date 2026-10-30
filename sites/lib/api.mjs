@@ -2,6 +2,7 @@
 import {DomainError,uuid,now,text,name,summary,suggestions,audit,available,fixed} from './accounting.mjs';
 import {ensureAccounts,authenticate,login,cookie,requireUser,passwordHash,hex,hash} from './auth.mjs';
 import {allOrders,getOrder,requestKey,createOrder,mutateOrder} from './database.mjs';
+import {resetPassword} from './accounts.mjs';
 import {exportOrder} from './export.mjs';
 import {productTemplate} from './spreadsheet.mjs';
 const encoder=new TextEncoder();
@@ -72,6 +73,11 @@ export async function handle(request,env){
     }
     if(path==='/api/logout'&&request.method==='POST')return json({ok:true},200,{'Set-Cookie':cookie(request,'',true)});
     requireUser(user);
+    const passwordMatch=path.match(/^\/api\/users\/([a-zA-Z0-9-]+)\/password$/);
+    if(passwordMatch&&request.method==='POST'){
+      const result=await resetPassword(env,user,request,passwordMatch[1],await input(request));
+      return json(result,200,passwordMatch[1]===user.id?{'Set-Cookie':cookie(request,'',true)}:{});
+    }
     if(path==='/api/users'&&request.method==='GET'){
       const result=await (user.role==='admin'?env.DB.prepare('SELECT id,username,role,active FROM accounts ORDER BY username'):env.DB.prepare('SELECT id,username,role,active FROM accounts WHERE id=?').bind(user.id)).all();
       return json({users:result.results});
