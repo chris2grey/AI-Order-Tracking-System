@@ -1,4 +1,10 @@
-# 订单中枢 · 本地运行与服务器部署
+# 订单中枢 · 在线试用与本地运行
+
+在线试用入口：[AI 跟单系统](https://ai-order-tracking-trial.candidrice16.chatgpt.site/)。使用独立系统账号登录，无需 ChatGPT 账号或安装程序。在线版源码位于 `sites/`，数据与本机 Django 版本分开保存；账号密码单独交付。操作与更新流程见 [Sites在线试用.md](Sites在线试用.md)。
+
+当前改进包括系统自动序号、收付款用途选填、保存名称下拉、发货前后按产品多选分摊、后补运费、香港换单号和误录追溯。在线版另支持账号密码管理。最新云端检查见 [Sites checks](https://github.com/chris2grey/AI-Order-Tracking-System/actions/workflows/sites-checks.yml) 与 [Remote checks](https://github.com/chris2grey/AI-Order-Tracking-System/actions/workflows/remote-checks.yml)。
+
+下面为 Django 本地运行及服务器配置说明，文中早期验收记录保留供追溯。
 
 新版录入说明见 [录入与批量操作.md](录入与批量操作.md)：多行产品表格、Excel模板下载与导入草稿、订单汇率复用、多选分摊、一键全发、自供货成本，以及累计录入4次后的常用选项。
 

@@ -1,0 +1,20 @@
+{
+  "audited_initial_account_handoff": true,
+  "independent_accounts_login": true,
+  "site_url": "https://ai-order-tracking-trial.candidrice16.chatgpt.site",
+  "example_order": {
+    "id": "01f9b559-daca-4368-a2df-9b51ac94f72f",
+    "number": "在线试用示例-8F0EF0"
+  },
+  "prepayment_then_shipping_and_product_allocation": true,
+  "supplier_name_correction": true,
+  "late_freight_and_waybill_history": true,
+  "live_d1_concurrent_double_spend_rejected": true,
+  "funds_conserved_and_snapshots_unchanged": true,
+  "voucher_and_order_scope": true,
+  "xlsx_archive_and_hash_manifest": true,
+  "immutable_archive_and_locked_write_rejection": true,
+  "verified": true,
+  "verified_on": "2026-10-30",
+  "cloud_checks": "https://github.com/chris2grey/AI-Order-Tracking-System/actions/runs/40984082547"
+}
